@@ -10,6 +10,8 @@ Audivia es una plataforma completa de audiolibros con monetización dual, diseñ
 
 ### Para Oyentes
 - Catálogo de Audiolibros: Explora y descubre audiolibros organizados por categorías
+- Soporte de Series: Organiza audiolibros por nombre de serie y número de orden
+- Ordenamiento Múltiple: Ordena por recientes, serie, título o autor
 - Reproductor de Audio Nativo: Reproductor HTML5 con controles de velocidad, salto y progreso
 - Biblioteca Personal: Gestiona tus compras, favoritos y progreso de escucha
 - Listas de Reproducción: Crea y organiza tus propias listas de capítulos
@@ -31,8 +33,10 @@ Audivia es una plataforma completa de audiolibros con monetización dual, diseñ
 ### Administración
 - Panel de Control: Dashboard con métricas de ventas y usuarios
 - Gestión de Audiolibros: Crear, editar y organizar audiolibros y capítulos
+- Gestión de Series: Asignar audiolibros a series con orden personalizado
 - Gestión de Usuarios: Administrar cuentas, roles y permisos
 - Importación Masiva: Importar audiolibros desde YouTube o archivos locales
+- Sincronización GitHub: Backup y sincronización del código con GitHub
 - Configuración de Email: SMTP configurable para notificaciones
 - Códigos de Descuento: Crear y gestionar promociones
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Library as LibraryIcon, Heart, HeartOff, Clock, BookOpen, Play, ShoppingBag, Crown, Receipt, Download, FileText, Rss, Copy, RefreshCw, Check, Smartphone } from "lucide-react";
+import { Library as LibraryIcon, Heart, HeartOff, Clock, BookOpen, Play, ShoppingBag, Crown, Receipt, Download, FileText, Rss, Copy, RefreshCw, Check, Smartphone, Search } from "lucide-react";
 import { SiAndroid, SiApple } from "react-icons/si";
 import { QRCodeSVG } from "qrcode.react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -143,6 +143,39 @@ export default function Library() {
   const { data: rssTokenData, isLoading: loadingRssToken } = useQuery<{ token: RssFeedToken | null }>({
     queryKey: ["/api/user/rss-token"],
   });
+
+  const { data: rssFeedsData } = useQuery<{
+    feeds: Array<{
+      audiobookId: string;
+      title: string;
+      author: string;
+      coverArtUrl: string | null;
+      feedUrl: string;
+    }>;
+    token: string | null;
+    globalFeedUrl: string;
+  }>({
+    queryKey: ["/api/user/rss-feeds"],
+    enabled: !!rssTokenData?.token,
+  });
+
+  const [copiedFeedId, setCopiedFeedId] = useState<string | null>(null);
+  const [feedSearchQuery, setFeedSearchQuery] = useState("");
+
+  const filteredFeeds = rssFeedsData?.feeds?.filter(feed => 
+    feed.title.toLowerCase().includes(feedSearchQuery.toLowerCase()) ||
+    feed.author.toLowerCase().includes(feedSearchQuery.toLowerCase())
+  ) || [];
+
+  const copyIndividualFeedUrl = async (feedUrl: string, audiobookId: string) => {
+    await navigator.clipboard.writeText(feedUrl);
+    setCopiedFeedId(audiobookId);
+    setTimeout(() => setCopiedFeedId(null), 2000);
+    toast({
+      title: "Copiado",
+      description: "El enlace RSS del audiolibro ha sido copiado",
+    });
+  };
 
   const generateRssTokenMutation = useMutation({
     mutationFn: async () => {
@@ -550,6 +583,69 @@ export default function Library() {
                       </div>
                     </div>
                   </div>
+
+                  {rssFeedsData?.feeds && rssFeedsData.feeds.length > 0 && (
+                    <div className="border-t pt-4 mt-4">
+                      <h3 className="font-medium mb-3 flex items-center gap-2">
+                        <BookOpen className="w-4 h-4" />
+                        Feeds individuales por audiolibro
+                      </h3>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        Tambien puedes suscribirte a cada audiolibro por separado:
+                      </p>
+                      <div className="relative mb-3">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          placeholder="Buscar audiolibro..."
+                          value={feedSearchQuery}
+                          onChange={(e) => setFeedSearchQuery(e.target.value)}
+                          className="pl-9"
+                          data-testid="input-search-rss-feeds"
+                        />
+                      </div>
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {filteredFeeds.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            No se encontraron audiolibros
+                          </p>
+                        ) : filteredFeeds.map((feed) => (
+                          <div
+                            key={feed.audiobookId}
+                            className="flex items-center gap-3 p-2 rounded-lg bg-card border"
+                            data-testid={`rss-feed-item-${feed.audiobookId}`}
+                          >
+                            {feed.coverArtUrl ? (
+                              <img
+                                src={feed.coverArtUrl}
+                                alt={feed.title}
+                                className="w-10 h-10 rounded object-cover flex-shrink-0"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                <BookOpen className="w-5 h-5 text-primary" />
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{feed.title}</p>
+                              <p className="text-xs text-muted-foreground truncate">{feed.author}</p>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              onClick={() => copyIndividualFeedUrl(feed.feedUrl, feed.audiobookId)}
+                              data-testid={`button-copy-rss-${feed.audiobookId}`}
+                            >
+                              {copiedFeedId === feed.audiobookId ? (
+                                <Check className="w-4 h-4" />
+                              ) : (
+                                <Copy className="w-4 h-4" />
+                              )}
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="text-center py-8 border border-dashed rounded-lg">

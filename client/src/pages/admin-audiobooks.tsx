@@ -106,6 +106,8 @@ export default function AdminAudiobooks() {
     isFree: true,
     amazonEbookUrl: "",
     amazonPrintUrl: "",
+    seriesName: "",
+    seriesIndex: "",
   });
 
   const { data: audiobooks = [], isLoading } = useQuery<Audiobook[]>({
@@ -238,6 +240,8 @@ export default function AdminAudiobooks() {
       isFree: true,
       amazonEbookUrl: "",
       amazonPrintUrl: "",
+      seriesName: "",
+      seriesIndex: "",
     });
     setCoverFile(null);
     setCoverPreview(null);
@@ -305,6 +309,8 @@ export default function AdminAudiobooks() {
       isFree: audiobook.isFree,
       amazonEbookUrl: audiobook.amazonEbookUrl || "",
       amazonPrintUrl: audiobook.amazonPrintUrl || "",
+      seriesName: audiobook.seriesName || "",
+      seriesIndex: audiobook.seriesIndex?.toString() || "",
     });
     setCoverPreview(audiobook.coverArtUrl || null);
     setShowEditDialog(true);
@@ -341,9 +347,15 @@ export default function AdminAudiobooks() {
       }
     }
 
+    const dataToSubmit = {
+      ...formData,
+      coverArtUrl,
+      seriesName: formData.seriesName || null,
+      seriesIndex: formData.seriesIndex ? parseInt(formData.seriesIndex) : null,
+    };
     updateAudiobookMutation.mutate({ 
       id: editingAudiobook.id, 
-      data: { ...formData, coverArtUrl } 
+      data: dataToSubmit
     });
   };
 
@@ -383,7 +395,13 @@ export default function AdminAudiobooks() {
       }
     }
 
-    createAudiobookMutation.mutate({ ...formData, coverArtUrl });
+    const dataToSubmit = {
+      ...formData,
+      coverArtUrl,
+      seriesName: formData.seriesName || null,
+      seriesIndex: formData.seriesIndex ? parseInt(formData.seriesIndex) : null,
+    };
+    createAudiobookMutation.mutate(dataToSubmit);
   };
 
   const formatPrice = (cents: number, currency: string = "EUR") => {
@@ -786,6 +804,32 @@ export default function AdminAudiobooks() {
               />
               <p className="text-xs text-muted-foreground">Enlace a la version impresa en Amazon</p>
             </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="seriesName">Nombre de la Serie</Label>
+                <Input
+                  id="seriesName"
+                  value={formData.seriesName}
+                  onChange={(e) => setFormData({ ...formData, seriesName: e.target.value })}
+                  placeholder="Saga de los Olvidados"
+                  data-testid="input-audiobook-series-name"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="seriesIndex">Orden en la Serie</Label>
+                <Input
+                  id="seriesIndex"
+                  type="number"
+                  min={1}
+                  value={formData.seriesIndex}
+                  onChange={(e) => setFormData({ ...formData, seriesIndex: e.target.value })}
+                  placeholder="1"
+                  data-testid="input-audiobook-series-index"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Si el audiolibro pertenece a una serie, indica el nombre y el orden (1, 2, 3...)</p>
           </div>
           
           <DialogFooter>
@@ -1088,6 +1132,32 @@ export default function AdminAudiobooks() {
               />
               <p className="text-xs text-muted-foreground">Enlace a la version impresa en Amazon</p>
             </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-seriesName">Nombre de la Serie</Label>
+                <Input
+                  id="edit-seriesName"
+                  value={formData.seriesName}
+                  onChange={(e) => setFormData({ ...formData, seriesName: e.target.value })}
+                  placeholder="Saga de los Olvidados"
+                  data-testid="input-edit-audiobook-series-name"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-seriesIndex">Orden en la Serie</Label>
+                <Input
+                  id="edit-seriesIndex"
+                  type="number"
+                  min={1}
+                  value={formData.seriesIndex}
+                  onChange={(e) => setFormData({ ...formData, seriesIndex: e.target.value })}
+                  placeholder="1"
+                  data-testid="input-edit-audiobook-series-index"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Si el audiolibro pertenece a una serie, indica el nombre y el orden (1, 2, 3...)</p>
           </div>
           
           <DialogFooter>

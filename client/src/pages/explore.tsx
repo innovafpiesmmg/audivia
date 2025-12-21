@@ -51,6 +51,7 @@ export default function Explore() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Todos");
   const [priceFilter, setPriceFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("recent");
   const { toast } = useToast();
 
   const { data: audiobooks = [], isLoading } = useQuery<Audiobook[]>({
@@ -63,23 +64,50 @@ export default function Explore() {
 
   const favoriteIds = new Set(userFavorites.map(f => f.id));
 
-  const filteredAudiobooks = audiobooks.filter((audiobook) => {
-    const query = searchQuery.toLowerCase();
-    const matchesSearch =
-      audiobook.title.toLowerCase().includes(query) ||
-      audiobook.author.toLowerCase().includes(query) ||
-      audiobook.description.toLowerCase().includes(query) ||
-      audiobook.category.toLowerCase().includes(query);
-    
-    const matchesCategory = selectedCategory === "Todos" || audiobook.category === selectedCategory;
-    
-    const matchesPrice = 
-      priceFilter === "all" ||
-      (priceFilter === "free" && audiobook.isFree) ||
-      (priceFilter === "paid" && !audiobook.isFree);
+  const filteredAudiobooks = audiobooks
+    .filter((audiobook) => {
+      const query = searchQuery.toLowerCase();
+      const matchesSearch =
+        audiobook.title.toLowerCase().includes(query) ||
+        audiobook.author.toLowerCase().includes(query) ||
+        audiobook.description.toLowerCase().includes(query) ||
+        audiobook.category.toLowerCase().includes(query) ||
+        (audiobook.seriesName?.toLowerCase().includes(query) ?? false);
+      
+      const matchesCategory = selectedCategory === "Todos" || audiobook.category === selectedCategory;
+      
+      const matchesPrice = 
+        priceFilter === "all" ||
+        (priceFilter === "free" && audiobook.isFree) ||
+        (priceFilter === "paid" && !audiobook.isFree);
 
-    return matchesSearch && matchesCategory && matchesPrice;
-  });
+      return matchesSearch && matchesCategory && matchesPrice;
+    })
+    .sort((a, b) => {
+      switch (sortBy) {
+        case "series":
+          // Group by series name, then by series index
+          if (a.seriesName && b.seriesName) {
+            const seriesCompare = a.seriesName.localeCompare(b.seriesName);
+            if (seriesCompare !== 0) return seriesCompare;
+            return (a.seriesIndex || 999) - (b.seriesIndex || 999);
+          }
+          // Put items with series first
+          if (a.seriesName && !b.seriesName) return -1;
+          if (!a.seriesName && b.seriesName) return 1;
+          return a.title.localeCompare(b.title);
+        case "title":
+          return a.title.localeCompare(b.title);
+        case "author":
+          return a.author.localeCompare(b.author);
+        case "recent":
+        default:
+          // Handle missing createdAt gracefully
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+      }
+    });
 
   const handleToggleFavorite = async (audiobookId: string) => {
     const isFav = favoriteIds.has(audiobookId);
@@ -163,6 +191,17 @@ export default function Explore() {
               <SelectItem value="paid">De pago</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={sortBy} onValueChange={setSortBy}>
+            <SelectTrigger className="w-full md:w-44" data-testid="select-sort">
+              <SelectValue placeholder="Ordenar por" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="recent">Más recientes</SelectItem>
+              <SelectItem value="series">Por serie</SelectItem>
+              <SelectItem value="title">Por título</SelectItem>
+              <SelectItem value="author">Por autor</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         {isLoading ? (
@@ -236,6 +275,11 @@ export default function Explore() {
                   <CardContent className="p-4">
                     <h3 className="font-serif font-semibold text-lg line-clamp-1">{audiobook.title}</h3>
                     <p className="text-sm text-muted-foreground line-clamp-1">{audiobook.author}</p>
+                    {audiobook.seriesName && (
+                      <p className="text-xs text-primary/80 mt-1 line-clamp-1">
+                        {audiobook.seriesName}{audiobook.seriesIndex ? ` #${audiobook.seriesIndex}` : ""}
+                      </p>
+                    )}
                     <div className="flex items-center justify-between mt-3">
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
                         <Clock className="w-3 h-3" />

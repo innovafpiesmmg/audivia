@@ -5032,6 +5032,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get user's current subscription
   app.get("/api/user/subscription", requireAuth, async (req, res) => {
     try {
+      // Check if user is admin - admins get virtual premium subscription
+      const user = await storage.getUser(req.session.userId!);
+      if (user?.role === "ADMIN") {
+        // Return a virtual premium subscription for admins
+        const virtualSubscription = {
+          id: "admin-premium",
+          userId: req.session.userId!,
+          planId: "admin-unlimited",
+          status: "ACTIVE",
+          currentPeriodStart: new Date(),
+          currentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
+          createdAt: new Date(),
+          paypalSubscriptionId: null,
+          planName: "Administrador Premium",
+          planPrice: 0,
+          isAdmin: true,
+        };
+        return res.json({ subscription: virtualSubscription });
+      }
+      
       const subscription = await storage.getUserActiveSubscription(req.session.userId!);
       res.json({ subscription });
     } catch (error: any) {
@@ -5183,18 +5203,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).send("Feed not found");
       }
       
-      // Get user's accessible audiobooks (purchases + active subscription)
+      // Get user's accessible audiobooks (purchases + active subscription + admin access)
       const purchases = await storage.getUserPurchases(feedToken.userId);
       const subscription = await storage.getUserActiveSubscription(feedToken.userId);
       
       // Get purchased audiobook IDs
       const purchasedIds = new Set(purchases.map(p => p.audiobookId));
       
+      // Check if user is admin - admins have access to all content
+      const isAdmin = user.role === "ADMIN";
+      
       // Get all audiobooks the user has access to
       let accessibleAudiobooks: any[] = [];
       
-      if (subscription) {
-        // Subscriber has access to all audiobooks
+      if (subscription || isAdmin) {
+        // Subscriber or Admin has access to all audiobooks
         const allAudiobooks = await storage.getPublicAudiobooks();
         accessibleAudiobooks = allAudiobooks;
       } else {
@@ -5211,11 +5234,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let items = "";
       for (const audiobook of accessibleAudiobooks) {
         const chapters = await storage.getChaptersByAudiobook(audiobook.id);
+        // Sort chapters by chapterNumber ascending (episode 1 first)
+        chapters.sort((a, b) => a.chapterNumber - b.chapterNumber);
+        
+        // Use audiobook creation date as base for synthetic dates
+        const audiobookCreatedAt = new Date(audiobook.createdAt || Date.now());
         
         for (const chapter of chapters) {
           if (!chapter.audioUrl) continue;
           
-          const pubDate = new Date(chapter.createdAt).toUTCString();
+          // Generate synthetic pubDate: base date + (chapterNumber * 1 minute) to ensure correct ordering
+          const syntheticDate = new Date(audiobookCreatedAt.getTime() + (chapter.chapterNumber * 60000));
+          const pubDate = syntheticDate.toUTCString();
           const duration = formatDurationForRss(chapter.duration);
           const audioUrl = chapter.audioUrl.startsWith('http') 
             ? chapter.audioUrl 
@@ -5263,6 +5293,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error generating RSS feed:", error);
       res.status(500).send("Error generating feed");
+    }
+  });
+
+  // Individual audiobook RSS feed endpoint
+  app.get("/feed/:token/audiobook/:audiobookId", async (req, res) => {
+    try {
+      const { token, audiobookId } = req.params;
+      
+      const feedToken = await storage.getRssFeedTokenByToken(token);
+      if (!feedToken || !feedToken.isActive) {
+        return res.status(404).send("Feed not found");
+      }
+      
+      // Update last accessed timestamp
+      await storage.updateRssFeedTokenAccess(token);
+      
+      const user = await storage.getUser(feedToken.userId);
+      if (!user) {
+        return res.status(404).send("Feed not found");
+      }
+      
+      // Get the specific audiobook - must be from public/approved audiobooks only
+      const publicAudiobooks = await storage.getPublicAudiobooks();
+      const audiobook = publicAudiobooks.find(ab => ab.id === audiobookId);
+      
+      if (!audiobook) {
+        return res.status(404).send("Audiobook not found");
+      }
+      
+      // Check if user has access to this audiobook
+      const purchases = await storage.getUserPurchases(feedToken.userId);
+      const subscription = await storage.getUserActiveSubscription(feedToken.userId);
+      const isAdmin = user.role === "ADMIN";
+      const purchasedIds = new Set(purchases.map(p => p.audiobookId));
+      
+      const hasAccess = isAdmin || subscription || audiobook.isFree || purchasedIds.has(audiobookId);
+      
+      if (!hasAccess) {
+        return res.status(403).send("Access denied to this audiobook");
+      }
+      
+      // Build RSS feed for this specific audiobook
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      const chapters = await storage.getChaptersByAudiobook(audiobookId);
+      // Sort chapters by chapterNumber ascending (episode 1 first)
+      chapters.sort((a, b) => a.chapterNumber - b.chapterNumber);
+      
+      // Use audiobook creation date as base, add minutes per chapter to ensure correct order
+      const audiobookCreatedAt = new Date(audiobook.createdAt || Date.now());
+      
+      let items = "";
+      for (const chapter of chapters) {
+        if (!chapter.audioUrl) continue;
+        
+        // Generate synthetic pubDate: base date + (chapterNumber * 1 minute) to ensure correct ordering
+        const syntheticDate = new Date(audiobookCreatedAt.getTime() + (chapter.chapterNumber * 60000));
+        const pubDate = syntheticDate.toUTCString();
+        const duration = formatDurationForRss(chapter.duration);
+        const audioUrl = chapter.audioUrl.startsWith('http') 
+          ? chapter.audioUrl 
+          : `${baseUrl}${chapter.audioUrl}`;
+        const coverUrl = audiobook.coverArtUrl?.startsWith('http')
+          ? audiobook.coverArtUrl
+          : audiobook.coverArtUrl ? `${baseUrl}${audiobook.coverArtUrl}` : '';
+        
+        items += `
+    <item>
+      <title>${escapeXml(`Cap. ${chapter.chapterNumber}: ${chapter.title}`)}</title>
+      <description><![CDATA[${chapter.description || audiobook.description || ''}]]></description>
+      <enclosure url="${escapeXml(audioUrl)}" type="audio/mpeg" length="${chapter.audioFileSize || 0}"/>
+      <guid isPermaLink="false">${chapter.id}</guid>
+      <pubDate>${pubDate}</pubDate>
+      <itunes:author>${escapeXml(audiobook.author)}</itunes:author>
+      <itunes:duration>${duration}</itunes:duration>
+      <itunes:episode>${chapter.chapterNumber}</itunes:episode>
+      <itunes:title>${escapeXml(chapter.title)}</itunes:title>
+      ${coverUrl ? `<itunes:image href="${escapeXml(coverUrl)}"/>` : ''}
+    </item>`;
+      }
+      
+      const audiobookCoverUrl = audiobook.coverArtUrl?.startsWith('http')
+        ? audiobook.coverArtUrl
+        : audiobook.coverArtUrl ? `${baseUrl}${audiobook.coverArtUrl}` : '';
+      
+      const feedXml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" 
+  xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"
+  xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>${escapeXml(audiobook.title)}</title>
+    <link>${baseUrl}/audiobook/${audiobookId}</link>
+    <description><![CDATA[${audiobook.description || ''}]]></description>
+    <language>${audiobook.language || 'es'}</language>
+    <itunes:author>${escapeXml(audiobook.author)}</itunes:author>
+    <itunes:summary><![CDATA[${audiobook.description || ''}]]></itunes:summary>
+    ${audiobookCoverUrl ? `<itunes:image href="${escapeXml(audiobookCoverUrl)}"/>` : ''}
+    ${audiobook.narrator ? `<itunes:owner><itunes:name>${escapeXml(audiobook.narrator)}</itunes:name></itunes:owner>` : ''}
+    <itunes:category text="Arts">
+      <itunes:category text="Books"/>
+    </itunes:category>
+    ${items}
+  </channel>
+</rss>`;
+      
+      res.set('Content-Type', 'application/rss+xml; charset=utf-8');
+      res.send(feedXml);
+    } catch (error: any) {
+      console.error("Error generating audiobook RSS feed:", error);
+      res.status(500).send("Error generating feed");
+    }
+  });
+
+  // API endpoint to get list of available RSS feeds for user's audiobooks
+  app.get("/api/user/rss-feeds", requireAuth, async (req, res) => {
+    try {
+      const token = await storage.getRssFeedToken(req.session.userId!);
+      if (!token) {
+        return res.json({ feeds: [], token: null });
+      }
+      
+      const user = await storage.getUser(req.session.userId!);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      // Get user's accessible audiobooks
+      const purchases = await storage.getUserPurchases(req.session.userId!);
+      const subscription = await storage.getUserActiveSubscription(req.session.userId!);
+      const isAdmin = user.role === "ADMIN";
+      const purchasedIds = new Set(purchases.map(p => p.audiobookId));
+      
+      let accessibleAudiobooks: any[] = [];
+      
+      if (subscription || isAdmin) {
+        const allAudiobooks = await storage.getPublicAudiobooks();
+        accessibleAudiobooks = allAudiobooks;
+      } else {
+        const allAudiobooks = await storage.getPublicAudiobooks();
+        accessibleAudiobooks = allAudiobooks.filter(ab => 
+          purchasedIds.has(ab.id) || ab.isFree
+        );
+      }
+      
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      
+      const feeds = accessibleAudiobooks.map(ab => ({
+        audiobookId: ab.id,
+        title: ab.title,
+        author: ab.author,
+        coverArtUrl: ab.coverArtUrl,
+        feedUrl: `${baseUrl}/feed/${token.token}/audiobook/${ab.id}`,
+      }));
+      
+      res.json({ 
+        feeds, 
+        token,
+        globalFeedUrl: `${baseUrl}/feed/${token.token}`,
+      });
+    } catch (error: any) {
+      console.error("Error getting RSS feeds:", error);
+      res.status(500).json({ error: error.message || "Error obteniendo feeds RSS" });
     }
   });
 

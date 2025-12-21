@@ -98,6 +98,8 @@ export const audiobooks = pgTable("audiobooks", {
   stripePriceId: text("stripe_price_id"),
   amazonEbookUrl: text("amazon_ebook_url"),
   amazonPrintUrl: text("amazon_print_url"),
+  seriesName: text("series_name"),
+  seriesIndex: integer("series_index"),
   publisherId: varchar("publisher_id", { length: 36 }).notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   publishedAt: timestamp("published_at"),
@@ -543,6 +545,8 @@ export const insertAudiobookSchema = createInsertSchema(audiobooks)
     isFree: z.boolean().default(false),
     visibility: z.enum(["PRIVATE", "UNLISTED", "PUBLIC"]).default("PUBLIC"),
     totalDuration: z.number().int().min(0).default(0),
+    seriesName: z.string().optional().nullable(),
+    seriesIndex: z.number().int().min(1).optional().nullable(),
   });
 
 export const insertChapterSchema = createInsertSchema(chapters)
