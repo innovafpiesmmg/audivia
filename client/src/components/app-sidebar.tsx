@@ -1,4 +1,4 @@
-import { Home, Compass, Library, Shield, Users, BookOpen, Play, Mail, ListMusic, CreditCard, FileArchive, Wallet, TrendingUp, ShoppingCart, Tag, ExternalLink } from "lucide-react";
+import { Home, Compass, Library, Shield, Users, BookOpen, Play, Mail, ListMusic, CreditCard, FileArchive, Wallet, TrendingUp, ShoppingCart, Tag, ExternalLink, Github } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -124,6 +124,12 @@ const adminSystemItems = [
     url: "/admin/paypal-config",
     icon: Wallet,
     testId: "link-admin-paypal-config",
+  },
+  {
+    title: "GitHub",
+    url: "/admin/github",
+    icon: Github,
+    testId: "link-admin-github",
   },
   {
     title: "Servicios Externos",

@@ -8,7 +8,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from "@/components/ui/form";
-import { CreditCard, Key, Globe, CheckCircle, AlertCircle, ExternalLink, Lock } from "lucide-react";
+import { CreditCard, Key, Globe, CheckCircle, AlertCircle, ExternalLink, Lock, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { PaypalConfig } from "@shared/schema";
@@ -282,6 +282,7 @@ export default function AdminPayPalConfig() {
           </div>
         </CardContent>
       </Card>
+
     </div>
   );
 }

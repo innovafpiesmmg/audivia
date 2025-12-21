@@ -31,6 +31,7 @@ import AdminAudiobooks from "@/pages/admin-audiobooks";
 import AdminChapters from "@/pages/admin-chapters";
 import AdminEmailConfig from "@/pages/admin-email-config";
 import AdminPayPalConfig from "@/pages/admin-paypal-config";
+import AdminGitHub from "@/pages/admin-github";
 import AdminSalesDashboard from "@/pages/admin-sales-dashboard";
 import AdminSubscriptions from "@/pages/admin-subscriptions";
 import AdminImport from "@/pages/admin-import";
@@ -168,6 +169,11 @@ function Router() {
               <Route path="/admin/paypal-config">
                 <ProtectedRoute requireRole="ADMIN">
                   <AdminPayPalConfig />
+                </ProtectedRoute>
+              </Route>
+              <Route path="/admin/github">
+                <ProtectedRoute requireRole="ADMIN">
+                  <AdminGitHub />
                 </ProtectedRoute>
               </Route>
               <Route path="/admin/subscriptions">

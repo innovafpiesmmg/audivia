@@ -48,7 +48,7 @@ import { updateMP3MetadataBuffer } from "./id3-utils";
 import * as paypalService from "./paypal-service";
 import { invoiceService } from "./invoice-service";
 import { insertBillingProfileSchema, type Invoice } from "@shared/schema";
-import { syncToGitHub, getGitHubStatus } from "./github-service";
+import { syncToGitHub, getGitHubStatus, pullFromGitHub } from "./github-service";
 
 // Helper functions for RSS feed generation
 function escapeXml(str: string): string {
@@ -5446,6 +5446,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error syncing to GitHub:", error);
       res.status(500).json({ error: error.message || "Error sincronizando con GitHub" });
+    }
+  });
+
+  // Admin: Pull latest code from GitHub and restart
+  app.post("/api/admin/github/pull", requireAdmin, async (req, res) => {
+    try {
+      const result = await pullFromGitHub();
+      if (result.success) {
+        res.json(result);
+        setTimeout(() => {
+          console.log('[GitHub] Restarting application...');
+          process.exit(0);
+        }, 1000);
+      } else {
+        res.status(500).json({ error: result.message });
+      }
+    } catch (error: any) {
+      console.error("Error pulling from GitHub:", error);
+      res.status(500).json({ error: error.message || "Error actualizando desde GitHub" });
     }
   });
 

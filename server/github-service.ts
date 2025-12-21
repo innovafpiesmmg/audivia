@@ -1,6 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 let connectionSettings: any;
 
@@ -244,5 +245,134 @@ export async function getGitHubStatus(): Promise<{ connected: boolean; username?
     };
   } catch (error) {
     return { connected: false };
+  }
+}
+
+const PRESERVE_PATTERNS = [
+  'node_modules',
+  '.git',
+  '.replit',
+  '.config',
+  '.cache',
+  '.upm',
+  '.breakpoints',
+  'uploads',
+  'attached_assets',
+  '.env',
+  'package-lock.json',
+];
+
+function shouldPreserve(filePath: string): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  for (const pattern of PRESERVE_PATTERNS) {
+    if (normalizedPath.startsWith(pattern) || normalizedPath.includes('/' + pattern)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+let updateInProgress = false;
+
+export async function pullFromGitHub(): Promise<{ success: boolean; message: string; filesUpdated?: number }> {
+  if (updateInProgress) {
+    return { success: false, message: 'Ya hay una actualización en progreso' };
+  }
+  
+  updateInProgress = true;
+  
+  try {
+    const octokit = await getUncachableGitHubClient();
+    const { data: user } = await octokit.users.getAuthenticated();
+    
+    console.log(`[GitHub] Pulling from ${user.login}/${REPO_NAME}...`);
+    
+    let repoExists = false;
+    try {
+      await octokit.repos.get({ owner: user.login, repo: REPO_NAME });
+      repoExists = true;
+    } catch (error: any) {
+      if (error.status === 404) {
+        updateInProgress = false;
+        return { success: false, message: 'El repositorio no existe en GitHub' };
+      }
+      throw error;
+    }
+    
+    console.log('[GitHub] Downloading repository archive...');
+    const { data: archive } = await octokit.repos.downloadZipballArchive({
+      owner: user.login,
+      repo: REPO_NAME,
+      ref: 'main',
+    });
+    
+    const tempDir = path.join(os.tmpdir(), `github-pull-${Date.now()}`);
+    const zipPath = path.join(tempDir, 'repo.zip');
+    
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(zipPath, Buffer.from(archive as ArrayBuffer));
+    
+    console.log('[GitHub] Extracting archive...');
+    const unzipper = await import('unzipper');
+    const extractDir = path.join(tempDir, 'extracted');
+    
+    await new Promise<void>((resolve, reject) => {
+      fs.createReadStream(zipPath)
+        .pipe(unzipper.Extract({ path: extractDir }))
+        .on('close', resolve)
+        .on('error', reject);
+    });
+    
+    const extractedContents = fs.readdirSync(extractDir);
+    const repoDir = path.join(extractDir, extractedContents[0]);
+    
+    const projectDir = process.cwd();
+    let filesUpdated = 0;
+    
+    function copyRecursive(srcDir: string, destDir: string, baseDir: string = srcDir) {
+      const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        const srcPath = path.join(srcDir, entry.name);
+        const relativePath = path.relative(baseDir, srcPath);
+        const destPath = path.join(destDir, relativePath);
+        
+        if (shouldPreserve(relativePath)) {
+          console.log(`[GitHub] Preserving: ${relativePath}`);
+          continue;
+        }
+        
+        if (entry.isDirectory()) {
+          fs.mkdirSync(destPath, { recursive: true });
+          copyRecursive(srcPath, destDir, baseDir);
+        } else {
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          fs.copyFileSync(srcPath, destPath);
+          filesUpdated++;
+        }
+      }
+    }
+    
+    console.log('[GitHub] Copying files to project...');
+    copyRecursive(repoDir, projectDir, repoDir);
+    
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    
+    console.log(`[GitHub] Pull complete! ${filesUpdated} files updated`);
+    
+    updateInProgress = false;
+    
+    return {
+      success: true,
+      message: `Actualización completada. ${filesUpdated} archivos actualizados. Reiniciando aplicación...`,
+      filesUpdated,
+    };
+  } catch (error: any) {
+    console.error('[GitHub] Error pulling:', error);
+    updateInProgress = false;
+    return {
+      success: false,
+      message: error.message || 'Error al actualizar desde GitHub',
+    };
   }
 }
