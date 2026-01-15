@@ -44,7 +44,7 @@ async function getUncachableGitHubClient() {
   return new Octokit({ auth: accessToken });
 }
 
-const REPO_OWNER = 'audivia';
+const REPO_OWNER = 'innovafpiesmmg';
 const REPO_NAME = 'audivia';
 
 const IGNORE_PATTERNS = [
@@ -185,10 +185,12 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
     
     console.log(`[GitHub] Creating tree with ${treeItems.length} files...`);
     
+    // Use base_tree if repository already exists to avoid 500 error with large trees
     const { data: tree } = await octokit.git.createTree({
       owner: user.login,
       repo: REPO_NAME,
       tree: treeItems,
+      base_tree: mainSha, // Include base tree to optimize tree creation
     });
     
     const commitMessage = `Sync from Replit - ${new Date().toISOString()}`;
@@ -329,7 +331,7 @@ export async function pullFromGitHub(): Promise<{ success: boolean; message: str
     const projectDir = process.cwd();
     let filesUpdated = 0;
     
-    function copyRecursive(srcDir: string, destDir: string, baseDir: string = srcDir) {
+    const copyRecursive = (srcDir: string, destDir: string, baseDir: string = srcDir) => {
       const entries = fs.readdirSync(srcDir, { withFileTypes: true });
       
       for (const entry of entries) {
@@ -351,7 +353,7 @@ export async function pullFromGitHub(): Promise<{ success: boolean; message: str
           filesUpdated++;
         }
       }
-    }
+    };
     
     console.log('[GitHub] Copying files to project...');
     copyRecursive(repoDir, projectDir, repoDir);
