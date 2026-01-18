@@ -50,7 +50,37 @@ Audivia es una plataforma completa de audiolibros con monetización dual, diseñ
 
 ---
 
-## Instalación
+## Instalación Rápida (Ubuntu Server)
+
+### Instalación Desatendida con un Solo Comando
+
+Ejecuta este comando en tu servidor Ubuntu (18.04, 20.04, 22.04 o 24.04):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/innovafpiesmmg/audivia/main/install.sh | sudo bash
+```
+
+O si prefieres usar wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/innovafpiesmmg/audivia/main/install.sh | sudo bash
+```
+
+Este script automáticamente:
+- Instala Node.js 20, PostgreSQL y todas las dependencias
+- Crea la base de datos y usuario
+- Descarga e instala Audivia
+- Configura PM2 para inicio automático
+- Instala y configura Nginx como proxy reverso
+- Configura el firewall (UFW)
+
+Al finalizar, accede a `http://tu-ip-servidor` y verás el asistente de configuración para crear tu cuenta de administrador.
+
+Las credenciales de la base de datos se guardan en `/root/audivia-credentials.txt`.
+
+---
+
+## Instalación Manual
 
 ### 1. Clonar el Repositorio
 ```bash

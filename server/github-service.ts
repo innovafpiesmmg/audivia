@@ -2,6 +2,8 @@ import { Octokit } from '@octokit/rest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+// @ts-ignore
+import { CreateOrUpdateFiles } from 'octokit-commit-multiple-files';
 
 let connectionSettings: any;
 
@@ -53,6 +55,7 @@ const IGNORE_PATTERNS = [
   '.replit',
   '.config',
   '.cache',
+  '.local',
   'dist',
   '.upm',
   'replit.nix',
@@ -120,6 +123,7 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
         });
         repoExists = true;
         console.log(`[GitHub] Repository ${REPO_NAME} created`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
       } else {
         throw error;
       }
@@ -130,101 +134,47 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
     
     console.log(`[GitHub] Found ${files.length} files to sync`);
     
-    let mainSha: string | undefined;
-    try {
-      const { data: ref } = await octokit.git.getRef({
-        owner: user.login,
-        repo: REPO_NAME,
-        ref: 'heads/main',
-      });
-      mainSha = ref.object.sha;
-    } catch (error: any) {
-      if (error.status === 404) {
-        try {
-          const { data: ref } = await octokit.git.getRef({
-            owner: user.login,
-            repo: REPO_NAME,
-            ref: 'heads/master',
-          });
-          mainSha = ref.object.sha;
-        } catch (e) {
-          console.log('[GitHub] No existing branch found, will create new');
-        }
-      }
-    }
+    const filesObject: Record<string, string> = {};
+    let fileCount = 0;
     
-    const treeItems: { path: string; mode: '100644'; type: 'blob'; sha: string }[] = [];
-    
-    console.log(`[GitHub] Creating blobs for ${files.length} files...`);
-    
-    let blobCount = 0;
     for (const file of files) {
       const fullPath = path.join(projectDir, file);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const { data: blob } = await octokit.git.createBlob({
-          owner: user.login,
-          repo: REPO_NAME,
-          content: Buffer.from(content).toString('base64'),
-          encoding: 'base64',
-        });
-        treeItems.push({
-          path: file.replace(/\\/g, '/'),
-          mode: '100644',
-          type: 'blob',
-          sha: blob.sha,
-        });
-        blobCount++;
-        if (blobCount % 50 === 0) {
-          console.log(`[GitHub] Created ${blobCount}/${files.length} blobs...`);
+        if (content.length > 0) {
+          filesObject[file.replace(/\\/g, '/')] = content;
+          fileCount++;
+          if (fileCount % 100 === 0) {
+            console.log(`[GitHub] Read ${fileCount}/${files.length} files...`);
+          }
         }
       } catch (error) {
         console.log(`[GitHub] Skipping binary/unreadable file: ${file}`);
       }
     }
     
-    console.log(`[GitHub] Creating tree with ${treeItems.length} files...`);
+    console.log(`[GitHub] Uploading ${Object.keys(filesObject).length} files in batch...`);
     
-    // Use base_tree if repository already exists to avoid 500 error with large trees
-    const { data: tree } = await octokit.git.createTree({
+    const octokitWithPlugin = CreateOrUpdateFiles(octokit);
+    const result = await octokitWithPlugin.createOrUpdateFiles({
       owner: user.login,
       repo: REPO_NAME,
-      tree: treeItems,
-      base_tree: mainSha, // Include base tree to optimize tree creation
+      branch: 'main',
+      createBranch: true,
+      changes: [
+        {
+          message: `Sync from Replit - ${new Date().toISOString()}`,
+          files: filesObject,
+        },
+      ],
     });
     
-    const commitMessage = `Sync from Replit - ${new Date().toISOString()}`;
-    const { data: commit } = await octokit.git.createCommit({
-      owner: user.login,
-      repo: REPO_NAME,
-      message: commitMessage,
-      tree: tree.sha,
-      parents: mainSha ? [mainSha] : [],
-    });
-    
-    try {
-      await octokit.git.updateRef({
-        owner: user.login,
-        repo: REPO_NAME,
-        ref: 'heads/main',
-        sha: commit.sha,
-        force: true,
-      });
-    } catch (error) {
-      await octokit.git.createRef({
-        owner: user.login,
-        repo: REPO_NAME,
-        ref: 'refs/heads/main',
-        sha: commit.sha,
-      });
-    }
-    
-    console.log(`[GitHub] Sync complete! Commit: ${commit.sha}`);
+    console.log(`[GitHub] Sync complete!`);
     
     return {
       success: true,
-      message: `Repositorio actualizado exitosamente. ${treeItems.length} archivos sincronizados.`,
-      filesUpdated: treeItems.length,
+      message: `Repositorio actualizado exitosamente. ${Object.keys(filesObject).length} archivos sincronizados.`,
+      filesUpdated: Object.keys(filesObject).length,
     };
   } catch (error: any) {
     console.error('[GitHub] Error syncing:', error);
