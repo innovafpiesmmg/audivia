@@ -50,19 +50,19 @@ const REPO_OWNER = 'innovafpiesmmg';
 const REPO_NAME = 'audivia';
 
 const IGNORE_PATTERNS = [
-  'node_modules',
-  '.git',
+  'node_modules/',
+  '.git/',
   '.replit',
-  '.config',
-  '.cache',
-  '.local',
-  'dist',
-  '.upm',
+  '.config/',
+  '.cache/',
+  '.local/',
+  'dist/',
+  '.upm/',
   'replit.nix',
   '.breakpoints',
   'package-lock.json',
-  'attached_assets',
-  'uploads',
+  'attached_assets/',
+  'uploads/',
   '.env',
   '*.log',
 ];
