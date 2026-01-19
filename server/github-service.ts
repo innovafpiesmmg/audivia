@@ -138,22 +138,38 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
     
     console.log(`[GitHub] Found ${files.length} files to sync`);
     
-    const filesObject: Record<string, string> = {};
+    const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.svg', '.woff', '.woff2', '.ttf', '.eot', '.otf', '.pdf'];
+    
+    const filesObject: Record<string, string | { content: string; encoding: string }> = {};
     let fileCount = 0;
     
     for (const file of files) {
       const fullPath = path.join(projectDir, file);
+      const ext = path.extname(file).toLowerCase();
+      const isBinary = binaryExtensions.includes(ext);
+      
       try {
-        const content = fs.readFileSync(fullPath, 'utf-8');
-        if (content.length > 0) {
-          filesObject[file.replace(/\\/g, '/')] = content;
-          fileCount++;
-          if (fileCount % 100 === 0) {
-            console.log(`[GitHub] Read ${fileCount}/${files.length} files...`);
+        if (isBinary) {
+          const content = fs.readFileSync(fullPath);
+          if (content.length > 0) {
+            filesObject[file.replace(/\\/g, '/')] = {
+              content: content.toString('base64'),
+              encoding: 'base64'
+            };
+            fileCount++;
+          }
+        } else {
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          if (content.length > 0) {
+            filesObject[file.replace(/\\/g, '/')] = content;
+            fileCount++;
           }
         }
+        if (fileCount % 100 === 0) {
+          console.log(`[GitHub] Read ${fileCount}/${files.length} files...`);
+        }
       } catch (error) {
-        console.log(`[GitHub] Skipping binary/unreadable file: ${file}`);
+        console.log(`[GitHub] Skipping unreadable file: ${file}`);
       }
     }
     
