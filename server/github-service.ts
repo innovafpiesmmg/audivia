@@ -61,10 +61,14 @@ const IGNORE_PATTERNS = [
   'replit.nix',
   '.breakpoints',
   'package-lock.json',
-  'attached_assets/',
   'uploads/',
   '.env',
   '*.log',
+  '*.mp3',
+  '*.zip',
+  'attached_assets/Pasted-',
+  'attached_assets/generated_images/',
+  'attached_assets/logo_extracted/',
 ];
 
 function shouldIgnore(filePath: string): boolean {
