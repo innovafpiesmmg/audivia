@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
+import nodePath from "path";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { pool as pgPool } from "./db";
@@ -63,6 +64,9 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: false }));
+
+// Serve attached_assets as static files
+app.use('/attached_assets', express.static(nodePath.resolve(import.meta.dirname, '..', 'attached_assets')));
 
 app.use((req, res, next) => {
   const start = Date.now();
