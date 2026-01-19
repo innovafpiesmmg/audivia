@@ -140,7 +140,8 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
     
     const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.svg', '.woff', '.woff2', '.ttf', '.eot', '.otf', '.pdf'];
     
-    const filesObject: Record<string, string | { content: string; encoding: string }> = {};
+    const filesObject: Record<string, string> = {};
+    const binaryFiles: Array<{path: string, content: Buffer}> = [];
     let fileCount = 0;
     
     for (const file of files) {
@@ -152,10 +153,7 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
         if (isBinary) {
           const content = fs.readFileSync(fullPath);
           if (content.length > 0) {
-            filesObject[file.replace(/\\/g, '/')] = {
-              content: content.toString('base64'),
-              encoding: 'base64'
-            };
+            binaryFiles.push({ path: file.replace(/\\/g, '/'), content });
             fileCount++;
           }
         } else {
@@ -173,7 +171,7 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
       }
     }
     
-    console.log(`[GitHub] Uploading ${Object.keys(filesObject).length} files in batch...`);
+    console.log(`[GitHub] Uploading ${Object.keys(filesObject).length} text files in batch...`);
     
     const octokitWithPlugin = CreateOrUpdateFiles(octokit);
     const result = await octokitWithPlugin.createOrUpdateFiles({
@@ -189,12 +187,52 @@ export async function syncToGitHub(): Promise<{ success: boolean; message: strin
       ],
     });
     
-    console.log(`[GitHub] Sync complete!`);
+    console.log(`[GitHub] Text files synced. Now uploading ${binaryFiles.length} binary files...`);
+    
+    // Upload binary files individually using GitHub's contents API
+    let binaryUploaded = 0;
+    for (const { path: filePath, content } of binaryFiles) {
+      try {
+        // Get current file SHA if it exists
+        let sha: string | undefined;
+        try {
+          const { data } = await octokit.repos.getContent({
+            owner: user.login,
+            repo: REPO_NAME,
+            path: filePath,
+            ref: 'main',
+          });
+          if (!Array.isArray(data) && data.sha) {
+            sha = data.sha;
+          }
+        } catch (e) {
+          // File doesn't exist yet
+        }
+        
+        await octokit.repos.createOrUpdateFileContents({
+          owner: user.login,
+          repo: REPO_NAME,
+          path: filePath,
+          message: `Update binary file: ${filePath}`,
+          content: content.toString('base64'),
+          branch: 'main',
+          sha,
+        });
+        binaryUploaded++;
+        if (binaryUploaded % 10 === 0) {
+          console.log(`[GitHub] Uploaded ${binaryUploaded}/${binaryFiles.length} binary files...`);
+        }
+      } catch (error: any) {
+        console.log(`[GitHub] Failed to upload binary: ${filePath} - ${error.message}`);
+      }
+    }
+    
+    console.log(`[GitHub] Sync complete! ${Object.keys(filesObject).length} text + ${binaryUploaded} binary files.`);
     
     return {
       success: true,
-      message: `Repositorio actualizado exitosamente. ${Object.keys(filesObject).length} archivos sincronizados.`,
-      filesUpdated: Object.keys(filesObject).length,
+      message: `Repositorio actualizado exitosamente. ${Object.keys(filesObject).length} archivos de texto y ${binaryUploaded} archivos binarios sincronizados.`,
+      filesUpdated: Object.keys(filesObject).length + binaryUploaded,
     };
   } catch (error: any) {
     console.error('[GitHub] Error syncing:', error);
