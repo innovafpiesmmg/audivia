@@ -272,17 +272,88 @@ if command -v ufw &> /dev/null; then
 fi
 
 # ==============================================================================
+# CLOUDFLARE TUNNEL (OPCIONAL)
+# ==============================================================================
+CLOUDFLARE_CONFIGURED=false
+
+# Verificar si ya existe configuración de Cloudflare
+if [ -f "/etc/cloudflared/config.yml" ] || systemctl is-active --quiet cloudflared 2>/dev/null; then
+    print_status "Cloudflare Tunnel ya está configurado"
+    CLOUDFLARE_CONFIGURED=true
+fi
+
+# Preguntar por token si se proporciona como variable de entorno o argumento
+if [ -n "$CLOUDFLARE_TOKEN" ]; then
+    CF_TOKEN="$CLOUDFLARE_TOKEN"
+elif [ "$CLOUDFLARE_CONFIGURED" = false ]; then
+    echo ""
+    echo "=============================================="
+    echo "  CLOUDFLARE TUNNEL (Opcional)"
+    echo "=============================================="
+    echo ""
+    echo "  Cloudflare Tunnel permite acceder a tu aplicación"
+    echo "  desde Internet sin abrir puertos en tu router."
+    echo ""
+    echo "  Para obtener un token:"
+    echo "  1. Ve a https://one.dash.cloudflare.com"
+    echo "  2. Networks > Tunnels > Create a tunnel"
+    echo "  3. Selecciona 'Cloudflared' y copia el token"
+    echo ""
+    read -p "  Ingresa el token de Cloudflare (o Enter para omitir): " CF_TOKEN
+fi
+
+if [ -n "$CF_TOKEN" ] && [ "$CLOUDFLARE_CONFIGURED" = false ]; then
+    print_status "Configurando Cloudflare Tunnel..."
+    
+    # Instalar cloudflared
+    if ! command -v cloudflared &> /dev/null; then
+        curl -L --output /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb 2>/dev/null
+        dpkg -i /tmp/cloudflared.deb > /dev/null 2>&1
+        rm /tmp/cloudflared.deb
+    fi
+    
+    # Instalar el servicio con el token
+    cloudflared service install "$CF_TOKEN" > /dev/null 2>&1 || true
+    
+    # Habilitar e iniciar
+    systemctl enable cloudflared > /dev/null 2>&1 || true
+    systemctl start cloudflared > /dev/null 2>&1 || true
+    
+    # Habilitar cookies seguras (Cloudflare provee HTTPS)
+    if [ -f "$CONFIG_DIR/env" ]; then
+        if ! grep -q "SECURE_COOKIES" "$CONFIG_DIR/env"; then
+            echo "SECURE_COOKIES=true" >> "$CONFIG_DIR/env"
+        else
+            sed -i 's/SECURE_COOKIES=.*/SECURE_COOKIES=true/' "$CONFIG_DIR/env"
+        fi
+    fi
+    
+    CLOUDFLARE_CONFIGURED=true
+    print_success "Cloudflare Tunnel configurado"
+    print_status "Configura el hostname en el dashboard de Cloudflare"
+fi
+
+# ==============================================================================
 # CREDENCIALES
 # ==============================================================================
 SERVER_IP=$(hostname -I | awk '{print $1}')
+
+CF_INFO=""
+if [ "$CLOUDFLARE_CONFIGURED" = true ]; then
+    CF_INFO="
+Cloudflare Tunnel: Configurado
+  Estado:     systemctl status cloudflared
+  Logs:       journalctl -u cloudflared -f
+"
+fi
 
 cat > "/root/audivia-credentials.txt" << EOF
 ============================================
 AUDIVIA - Credenciales
 ============================================
 Fecha: $(date)
-URL: http://$SERVER_IP
-
+URL Local: http://$SERVER_IP
+$CF_INFO
 Base de datos:
   Nombre: $DB_NAME
   Usuario: $DB_USER
@@ -317,12 +388,21 @@ echo "=============================================="
 echo -e "${GREEN}   INSTALACIÓN COMPLETADA${NC}"
 echo "=============================================="
 echo ""
-echo "  URL: http://$SERVER_IP"
+echo "  URL Local: http://$SERVER_IP"
+if [ "$CLOUDFLARE_CONFIGURED" = true ]; then
+echo ""
+echo "  Cloudflare Tunnel: Configurado"
+echo "  Configura el hostname en el dashboard de Cloudflare"
+echo "  apuntando a http://localhost:$APP_PORT"
+fi
 echo ""
 echo "  Comandos útiles:"
 echo "  - Estado:     systemctl status audivia"
 echo "  - Logs:       journalctl -u audivia -f"
 echo "  - Reiniciar:  systemctl restart audivia"
+if [ "$CLOUDFLARE_CONFIGURED" = true ]; then
+echo "  - Tunnel:     systemctl status cloudflared"
+fi
 echo ""
 echo "  Credenciales: /root/audivia-credentials.txt"
 echo ""

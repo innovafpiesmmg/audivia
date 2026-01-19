@@ -9,379 +9,367 @@ Copia y adapta este prompt cuando necesites crear un autoinstalador para una nue
 ### PROMPT TEMPLATE
 
 ```
-Necesito crear un script autoinstalador (install.sh) para mi aplicación [NOMBRE_APP] que se desplegará en un servidor Ubuntu 22.04/24.04 con las siguientes características:
+Necesito crear un script autoinstalador (install.sh) para mi aplicación [NOMBRE_APP] que se desplegará en un servidor Ubuntu 22.04/24.04.
 
-## Información del Servidor
-- IP del servidor: [IP_SERVIDOR]
+## Información del Proyecto
+- Nombre de la aplicación: [NOMBRE_APP]
+- Repositorio GitHub: [URL_REPO]
 - Puerto de la aplicación: [PUERTO] (ejemplo: 5000)
-- Dominio (opcional): [DOMINIO]
-- Usuario del sistema para la app: [USUARIO_SISTEMA] (ejemplo: miapp)
+- Usuario del sistema: [USUARIO] (ejemplo: miapp)
 
 ## Stack Tecnológico
-- Runtime: Node.js [VERSION] (ejemplo: 20.x)
-- Base de datos: [PostgreSQL/MySQL/MongoDB/SQLite/Ninguna]
-- Gestor de procesos: PM2
-- Servidor web/proxy: Nginx
+- Runtime: Node.js 20.x
+- Base de datos: PostgreSQL
+- Gestor de procesos: systemd (NO PM2)
+- Proxy reverso: Nginx
 
-## Repositorio
-- URL del repositorio: [URL_REPO_GITHUB]
-- Rama principal: [main/master]
-- ¿Requiere token de acceso privado?: [Sí/No]
+## Requisitos del Instalador
+1. Usar systemd como gestor de procesos (más confiable que PM2 para reinicios)
+2. Guardar configuración en /etc/[NOMBRE_APP]/ (fuera del repositorio)
+3. Usar EnvironmentFile en systemd para cargar variables
+4. Detectar si es instalación nueva o actualización
+5. Preservar credenciales en actualizaciones
+6. Opción de configurar Cloudflare Tunnel (preguntando token)
+7. Soporte para cookies HTTP (sin HTTPS) con variable SECURE_COOKIES
 
-## Variables de Entorno Requeridas
-Lista las variables que necesita tu aplicación:
-- DATABASE_URL: Conexión a base de datos
+## Variables de Entorno
+- DATABASE_URL: Conexión PostgreSQL
 - SESSION_SECRET: Secreto para sesiones (generar automáticamente)
-- [OTRAS_VARIABLES]: [DESCRIPCIÓN]
-
-## Configuración de Base de Datos (si aplica)
-- Nombre de la base de datos: [NOMBRE_BD]
-- Usuario de la BD: [USUARIO_BD]
-- ¿Contraseña predefinida o generada?: [predefinida: XXXX / generar]
-
-## Requisitos Especiales
-- ¿Necesita SSL/HTTPS?: [Sí con Let's Encrypt / Sí con Cloudflare / No]
-- ¿Necesita cron jobs?: [Sí/No] - Describir
-- ¿Necesita almacenamiento de archivos?: [Sí/No] - Ruta
-- ¿Tiene proceso de build?: [npm run build / otro]
-- ¿Comando para iniciar?: [npm start / npm run dev / otro]
-
-## Estructura del Instalador Deseada
-El script debe:
-1. Verificar que se ejecuta como root
-2. Instalar dependencias del sistema (Node.js, [BD], Nginx, PM2)
-3. Crear usuario del sistema para la aplicación
-4. Configurar la base de datos (crear BD, usuario, permisos)
-5. Clonar el repositorio
-6. Instalar dependencias de Node.js
-7. Configurar variables de entorno (.env)
-8. Ejecutar migraciones de base de datos (si aplica)
-9. Configurar PM2 para gestionar la aplicación
-10. Configurar Nginx como proxy reverso
-11. (Opcional) Configurar SSL con Certbot
-12. Configurar firewall (UFW)
-13. Mostrar resumen de la instalación
-
-## Manejo de Errores
-- El script debe detenerse ante cualquier error crítico
-- Debe mostrar mensajes claros de progreso
-- Debe validar que los servicios están funcionando
-
-## Post-instalación
-Instrucciones adicionales que deben mostrarse al usuario:
-- [INSTRUCCIONES_ESPECIALES]
+- PORT: Puerto de la aplicación
+- NODE_ENV: production
+- SECURE_COOKIES: true/false (false si no hay HTTPS)
 ```
 
 ---
 
-## Ejemplo Completo Basado en Audivia
+## Lecciones Aprendidas (Errores Comunes a Evitar)
 
-Este es un ejemplo real del autoinstalador creado para Audivia:
+### 1. NO usar PM2 como gestor principal
+**Problema**: PM2 requiere `pm2 startup` y `pm2 save` que pueden fallar silenciosamente.
+**Solución**: Usar systemd directamente con un servicio `.service`.
 
-### Características Implementadas
+```bash
+# MAL - PM2 puede no sobrevivir reinicios
+pm2 start app.js
+pm2 save
+pm2 startup
 
-1. **Detección de Sistema**
-   - Verifica Ubuntu 22.04/24.04
-   - Comprueba arquitectura (x64/arm64)
-   - Valida ejecución como root
+# BIEN - systemd es nativo y confiable
+cat > /etc/systemd/system/miapp.service << EOF
+[Unit]
+Description=Mi Aplicación
+After=network.target postgresql.service
 
-2. **Instalación de Dependencias**
-   ```bash
-   # Node.js desde NodeSource
-   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-   apt-get install -y nodejs
-   
-   # PostgreSQL
-   apt-get install -y postgresql postgresql-contrib
-   
-   # Nginx y herramientas
-   apt-get install -y nginx git curl
-   
-   # PM2 global
-   npm install -g pm2
-   ```
+[Service]
+Type=simple
+User=miapp
+WorkingDirectory=/var/www/miapp
+EnvironmentFile=/etc/miapp/env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=10
 
-3. **Configuración de PostgreSQL**
-   ```bash
-   # Crear usuario y base de datos
-   sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
-   sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
-   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
-   
-   # Configurar autenticación md5 en pg_hba.conf
-   sed -i 's/local   all             all                                     peer/local   all             all                                     md5/' /etc/postgresql/*/main/pg_hba.conf
-   systemctl restart postgresql
-   ```
+[Install]
+WantedBy=multi-user.target
+EOF
+```
 
-4. **Creación de Usuario del Sistema**
-   ```bash
-   useradd -r -m -s /bin/bash $APP_USER
-   mkdir -p /var/www/$APP_NAME
-   chown -R $APP_USER:$APP_USER /var/www/$APP_NAME
-   ```
+### 2. Configuración FUERA del repositorio
+**Problema**: `git pull` puede sobrescribir `.env` o la configuración se pierde.
+**Solución**: Guardar en `/etc/[app]/env` y usar `EnvironmentFile` en systemd.
 
-5. **Clonación y Configuración**
-   ```bash
-   # Configurar git safe.directory
-   git config --global --add safe.directory /var/www/$APP_NAME
-   
-   # Clonar repositorio
-   sudo -u $APP_USER git clone $REPO_URL /var/www/$APP_NAME
-   
-   # Instalar dependencias
-   cd /var/www/$APP_NAME
-   sudo -u $APP_USER npm install
-   ```
+```bash
+# Crear directorio de configuración
+mkdir -p /etc/miapp
+chmod 700 /etc/miapp
 
-6. **Variables de Entorno (.env)**
-   ```bash
-   cat > /var/www/$APP_NAME/.env << EOF
-   DATABASE_URL=postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
-   SESSION_SECRET=$(openssl rand -base64 32)
-   NODE_ENV=production
-   PORT=$APP_PORT
-   EOF
-   chown $APP_USER:$APP_USER /var/www/$APP_NAME/.env
-   chmod 600 /var/www/$APP_NAME/.env
-   ```
+# Guardar configuración (formato systemd, SIN comillas)
+cat > /etc/miapp/env << EOF
+NODE_ENV=production
+PORT=5000
+DATABASE_URL=postgresql://user:pass@localhost:5432/db
+SESSION_SECRET=xxxxx
+EOF
+chmod 600 /etc/miapp/env
+```
 
-7. **Migraciones de Base de Datos**
-   ```bash
-   cd /var/www/$APP_NAME
-   sudo -u $APP_USER npm run db:push
-   ```
+### 3. Detectar actualización vs instalación nueva
+**Problema**: Regenerar credenciales en cada ejecución rompe la base de datos.
+**Solución**: Verificar si existe configuración previa.
 
-8. **Configuración de PM2**
-   ```bash
-   # ecosystem.config.js
-   cat > /var/www/$APP_NAME/ecosystem.config.js << EOF
-   module.exports = {
-     apps: [{
-       name: '$APP_NAME',
-       script: 'npm',
-       args: 'start',
-       cwd: '/var/www/$APP_NAME',
-       env: {
-         NODE_ENV: 'production',
-         PORT: $APP_PORT
-       }
-     }]
-   };
-   EOF
-   
-   # Iniciar con PM2
-   sudo -u $APP_USER pm2 start ecosystem.config.js
-   sudo -u $APP_USER pm2 save
-   
-   # Configurar inicio automático
-   env PATH=$PATH:/usr/bin pm2 startup systemd -u $APP_USER --hp /home/$APP_USER
-   ```
+```bash
+if [ -f "/etc/miapp/env" ]; then
+    IS_UPDATE=true
+    source /etc/miapp/env  # Cargar credenciales existentes
+else
+    IS_UPDATE=false
+    DB_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
+    SESSION_SECRET=$(openssl rand -base64 32)
+fi
+```
 
-9. **Configuración de Nginx**
-   ```bash
-   cat > /etc/nginx/sites-available/$APP_NAME << EOF
-   server {
-       listen 80;
-       server_name $DOMAIN _;
-       
-       location / {
-           proxy_pass http://127.0.0.1:$APP_PORT;
-           proxy_http_version 1.1;
-           proxy_set_header Upgrade \$http_upgrade;
-           proxy_set_header Connection 'upgrade';
-           proxy_set_header Host \$host;
-           proxy_set_header X-Real-IP \$remote_addr;
-           proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto \$scheme;
-           proxy_cache_bypass \$http_upgrade;
-       }
-   }
-   EOF
-   
-   ln -sf /etc/nginx/sites-available/$APP_NAME /etc/nginx/sites-enabled/
-   rm -f /etc/nginx/sites-enabled/default
-   nginx -t && systemctl reload nginx
-   ```
+### 4. Cookies seguras y HTTPS
+**Problema**: `secure: true` en cookies requiere HTTPS. Sin él, las sesiones no funcionan.
+**Solución**: Usar variable de entorno `SECURE_COOKIES`.
 
-10. **Firewall (UFW)**
-    ```bash
-    ufw allow ssh
-    ufw allow 'Nginx Full'
-    ufw --force enable
-    ```
+```javascript
+// En el código de la aplicación
+cookie: {
+  secure: process.env.SECURE_COOKIES === "true",
+  sameSite: "lax",
+}
+```
 
-11. **SSL con Let's Encrypt (opcional)**
-    ```bash
-    apt-get install -y certbot python3-certbot-nginx
-    certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
-    ```
+```bash
+# En /etc/miapp/env
+# Sin HTTPS (red local):
+SECURE_COOKIES=false
+
+# Con HTTPS (Cloudflare Tunnel o SSL):
+SECURE_COOKIES=true
+```
+
+### 5. Cloudflare Tunnel opcional
+**Problema**: Abrir puertos en el router no siempre es posible.
+**Solución**: Ofrecer configuración de Cloudflare Tunnel durante instalación.
+
+```bash
+# Preguntar por token
+read -p "Token de Cloudflare (Enter para omitir): " CF_TOKEN
+
+if [ -n "$CF_TOKEN" ]; then
+    # Instalar cloudflared
+    curl -L --output /tmp/cloudflared.deb \
+      https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+    dpkg -i /tmp/cloudflared.deb
+    
+    # Instalar servicio con token
+    cloudflared service install "$CF_TOKEN"
+    systemctl enable cloudflared
+    systemctl start cloudflared
+    
+    # Habilitar cookies seguras (Cloudflare = HTTPS)
+    echo "SECURE_COOKIES=true" >> /etc/miapp/env
+fi
+```
+
+### 6. Marcar Nginx como manual
+**Problema**: `apt autoremove` puede eliminar Nginx si se instaló como dependencia.
+**Solución**: Marcarlo como paquete manual.
+
+```bash
+apt-get install -y nginx
+apt-mark manual nginx
+```
+
+### 7. Permisos de Node.js
+**Problema**: A veces `/usr/bin/node` tiene permisos incorrectos.
+**Solución**: Asegurar permisos después de instalar.
+
+```bash
+chmod 755 /usr/bin/node
+chmod 755 /usr/bin/npm
+```
 
 ---
 
-## Estructura del Script install.sh
+## Estructura Completa del Instalador
 
 ```bash
 #!/bin/bash
 set -e
 
-#######################################
-# CONFIGURACIÓN - PERSONALIZAR AQUÍ
-#######################################
-APP_NAME="miapp"
-APP_USER="miapp"
-APP_PORT="5000"
-REPO_URL="https://github.com/usuario/repo.git"
-DB_NAME="miapp_db"
-DB_USER="miapp_user"
-DB_PASS="CAMBIAR_ESTA_CONTRASEÑA"
-DOMAIN=""  # Dejar vacío si no hay dominio
-
-#######################################
-# COLORES PARA OUTPUT
-#######################################
+# Colores
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-print_status() { echo -e "${BLUE}[*]${NC} $1"; }
-print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
-print_error() { echo -e "${RED}[✗]${NC} $1"; }
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[OK]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-#######################################
-# VERIFICACIONES INICIALES
-#######################################
+# Configuración
+APP_NAME="miapp"
+APP_DIR="/var/www/$APP_NAME"
+CONFIG_DIR="/etc/$APP_NAME"
+APP_PORT="5000"
+APP_USER="miapp"
+DB_NAME="miapp"
+DB_USER="miapp"
+GITHUB_REPO="https://github.com/usuario/repo.git"
+
+# Verificar root
 if [ "$EUID" -ne 0 ]; then
-    print_error "Este script debe ejecutarse como root"
+    print_error "Ejecutar como root"
     exit 1
 fi
 
-# Verificar Ubuntu
-if ! grep -q "Ubuntu" /etc/os-release; then
-    print_error "Este script está diseñado para Ubuntu"
-    exit 1
+# Detectar instalación existente
+IS_UPDATE=false
+if [ -f "$CONFIG_DIR/env" ]; then
+    IS_UPDATE=true
+    source "$CONFIG_DIR/env"
+else
+    DB_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
+    SESSION_SECRET=$(openssl rand -base64 32)
 fi
 
-#######################################
-# INSTALACIÓN
-#######################################
-print_status "Actualizando sistema..."
-apt-get update && apt-get upgrade -y
+# Instalar dependencias
+apt-get update -qq
+apt-get install -y -qq curl git nginx postgresql postgresql-contrib
+apt-mark manual nginx
 
-print_status "Instalando Node.js..."
+# Node.js
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
+apt-get install -y -qq nodejs
+chmod 755 /usr/bin/node /usr/bin/npm
 
-print_status "Instalando PostgreSQL..."
-apt-get install -y postgresql postgresql-contrib
+# PostgreSQL (solo instalación nueva)
+if [ "$IS_UPDATE" = false ]; then
+    sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
+    sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
+fi
 
-print_status "Instalando Nginx y herramientas..."
-apt-get install -y nginx git curl
+# Usuario del sistema
+id "$APP_USER" &>/dev/null || useradd --system --create-home --shell /bin/bash $APP_USER
 
-print_status "Instalando PM2..."
-npm install -g pm2
+# Configuración persistente
+mkdir -p "$CONFIG_DIR"
+DATABASE_URL="postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME"
 
-# ... (continuar con el resto de la instalación)
+cat > "$CONFIG_DIR/env" << EOF
+NODE_ENV=production
+PORT=$APP_PORT
+DATABASE_URL=$DATABASE_URL
+SESSION_SECRET=$SESSION_SECRET
+SECURE_COOKIES=false
+EOF
+chmod 600 "$CONFIG_DIR/env"
 
-#######################################
-# RESUMEN FINAL
-#######################################
+# Clonar/actualizar código
+git config --global --add safe.directory "$APP_DIR"
+if [ -d "$APP_DIR/.git" ]; then
+    cd "$APP_DIR" && git pull
+else
+    git clone --depth 1 "$GITHUB_REPO" "$APP_DIR"
+fi
+chown -R $APP_USER:$APP_USER "$APP_DIR"
+
+# Build
+cd "$APP_DIR"
+sudo -u $APP_USER npm install
+sudo -u $APP_USER npm run build
+
+# Servicio systemd
+cat > "/etc/systemd/system/$APP_NAME.service" << EOF
+[Unit]
+Description=$APP_NAME
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=$APP_USER
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$CONFIG_DIR/env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable $APP_NAME
+systemctl restart $APP_NAME
+
+# Nginx
+cat > "/etc/nginx/sites-available/$APP_NAME" << EOF
+server {
+    listen 80;
+    server_name _;
+    client_max_body_size 500M;
+    location / {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+ln -sf /etc/nginx/sites-available/$APP_NAME /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+systemctl restart nginx
+
+# Cloudflare Tunnel (opcional)
+echo ""
+read -p "Token de Cloudflare Tunnel (Enter para omitir): " CF_TOKEN
+if [ -n "$CF_TOKEN" ]; then
+    curl -L -o /tmp/cf.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+    dpkg -i /tmp/cf.deb
+    cloudflared service install "$CF_TOKEN"
+    systemctl enable cloudflared
+    systemctl start cloudflared
+    sed -i 's/SECURE_COOKIES=false/SECURE_COOKIES=true/' "$CONFIG_DIR/env"
+    systemctl restart $APP_NAME
+fi
+
+# Resumen
+SERVER_IP=$(hostname -I | awk '{print $1}')
 echo ""
 echo "=========================================="
-echo -e "${GREEN}¡INSTALACIÓN COMPLETADA!${NC}"
+echo -e "${GREEN}INSTALACIÓN COMPLETADA${NC}"
 echo "=========================================="
+echo "URL: http://$SERVER_IP"
 echo ""
-echo "Aplicación: $APP_NAME"
-echo "URL: http://$(hostname -I | awk '{print $1}'):$APP_PORT"
-echo "Usuario del sistema: $APP_USER"
-echo "Base de datos: $DB_NAME"
-echo ""
-echo "Comandos útiles:"
-echo "  sudo -u $APP_USER pm2 status"
-echo "  sudo -u $APP_USER pm2 logs $APP_NAME"
-echo "  sudo -u $APP_USER pm2 restart $APP_NAME"
+echo "Comandos:"
+echo "  Estado:     systemctl status $APP_NAME"
+echo "  Logs:       journalctl -u $APP_NAME -f"
+echo "  Reiniciar:  systemctl restart $APP_NAME"
 echo ""
 ```
 
 ---
-
-## Checklist de Verificación
-
-Antes de ejecutar el instalador, verifica:
-
-- [ ] El servidor tiene Ubuntu 22.04 o 24.04
-- [ ] Tienes acceso root o sudo
-- [ ] El puerto de la aplicación está disponible
-- [ ] El repositorio es accesible (público o con token)
-- [ ] Los puertos 80/443 están abiertos en el firewall externo
-- [ ] Tienes las credenciales de base de datos definidas
 
 ## Comandos de Diagnóstico
 
 ```bash
-# Ver estado de la aplicación
-sudo -u [usuario] pm2 status
-
-# Ver logs de la aplicación
-sudo -u [usuario] pm2 logs [app_name]
-
-# Ver logs de Nginx
-tail -f /var/log/nginx/error.log
-
-# Ver estado de PostgreSQL
+# Estado de servicios
+systemctl status [app]
+systemctl status cloudflared
+systemctl status nginx
 systemctl status postgresql
 
-# Probar conexión a base de datos
-psql -U [db_user] -d [db_name] -h localhost -W
+# Logs
+journalctl -u [app] -f
+journalctl -u cloudflared -f
 
-# Reiniciar servicios
-sudo -u [usuario] pm2 restart [app_name]
-systemctl restart nginx
-systemctl restart postgresql
+# Verificar puertos
+ss -ltnp | grep :5000
+
+# Probar conexión local
+curl http://localhost:5000
+
+# Verificar configuración
+cat /etc/[app]/env
+
+# Reiniciar todo
+systemctl restart [app] nginx cloudflared
 ```
-
-## Solución de Problemas Comunes
-
-| Problema | Solución |
-|----------|----------|
-| Error de conexión a BD | Verificar pg_hba.conf tiene md5 en lugar de peer |
-| PM2 no inicia al reiniciar | Ejecutar `pm2 startup` y `pm2 save` |
-| Nginx 502 Bad Gateway | Verificar que la app está corriendo en el puerto correcto |
-| Permission denied en git | Agregar safe.directory: `git config --global --add safe.directory /ruta` |
-| npm install falla | Verificar permisos y ejecutar como usuario de la app, no root |
 
 ---
 
-## Notas Adicionales
+## Solución de Problemas
 
-### Para Cloudflare Tunnel (alternativa a abrir puertos)
-
-Si no puedes abrir puertos en tu red, usa Cloudflare Tunnel:
-
-```bash
-# Instalar cloudflared
-curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-dpkg -i cloudflared.deb
-
-# Autenticar
-cloudflared tunnel login
-
-# Crear túnel
-cloudflared tunnel create [nombre-tunel]
-
-# Configurar y ejecutar
-cloudflared tunnel route dns [nombre-tunel] [subdominio.tudominio.com]
-cloudflared tunnel run [nombre-tunel]
-```
-
-### Para Repositorios Privados
-
-Usa un token de acceso personal de GitHub:
-
-```bash
-git clone https://[TOKEN]@github.com/usuario/repo-privado.git
-```
-
-O configura SSH keys para el usuario de la aplicación.
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| Login no funciona (401 después de 200) | Cookies `secure:true` sin HTTPS | Agregar `SECURE_COOKIES=false` a /etc/app/env |
+| Servicio no inicia después de reboot | PM2 mal configurado | Usar systemd en lugar de PM2 |
+| "No such file or directory" en systemd | EnvironmentFile no existe | Crear /etc/app/env con mkdir -p |
+| Error 521/512 en Cloudflare | Tunnel no apunta al puerto correcto | Configurar hostname a http://localhost:5000 |
+| Base de datos no conecta | pg_hba.conf usa "peer" | Cambiar a "md5" y reiniciar PostgreSQL |
+| Credenciales cambian en actualización | No detecta instalación previa | Verificar existencia de /etc/app/env |
