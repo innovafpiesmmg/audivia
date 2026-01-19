@@ -11,7 +11,7 @@ import { AuthProvider } from "@/components/auth-provider";
 import { ProtectedRoute } from "@/components/protected-route";
 import { UserMenu } from "@/components/user-menu";
 import { Footer } from "@/components/footer";
-const logoImage = "/attached_assets/audivia_horizonta_1766267902382.png";
+const logoImage = "/logo.png";
 import Home from "@/pages/home";
 import AudiobookDetail from "@/pages/audiobook-detail";
 import ChapterPlayer from "@/pages/chapter-player";

@@ -50,7 +50,7 @@ import {
   Loader2
 } from "lucide-react";
 import type { Audiobook, CartItem, UserSubscription, SubscriptionPlan, Chapter, BillingProfile } from "@shared/schema";
-const logoImage = "/attached_assets/audivia_horizonta_1766267902382.png";
+const logoImage = "/logo.png";
 
 type TabType = "home" | "explore" | "library" | "cart";
 
