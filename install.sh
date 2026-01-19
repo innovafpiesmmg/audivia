@@ -32,6 +32,7 @@ APP_USER="audivia"
 DB_NAME="audivia"
 DB_USER="audivia"
 DB_PASS=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 24)
+SESSION_SECRET=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 32)
 
 # ==============================================================================
 # VERIFICACIONES INICIALES
@@ -98,6 +99,24 @@ systemctl start postgresql
 systemctl enable postgresql
 print_success "PostgreSQL instalado y activo"
 
+# Configurar autenticación PostgreSQL para conexiones locales con contraseña
+print_status "Configurando autenticación PostgreSQL..."
+PG_HBA=$(find /etc/postgresql -name "pg_hba.conf" 2>/dev/null | head -1)
+if [ -n "$PG_HBA" ]; then
+    # Backup del archivo original
+    cp "$PG_HBA" "$PG_HBA.backup"
+    
+    # Cambiar autenticación de peer a md5 para conexiones locales
+    sed -i 's/local   all             all                                     peer/local   all             all                                     md5/' "$PG_HBA"
+    sed -i 's/local   all             all                                     scram-sha-256/local   all             all                                     md5/' "$PG_HBA"
+    
+    # Reiniciar PostgreSQL para aplicar cambios
+    systemctl restart postgresql
+    print_success "Autenticación PostgreSQL configurada (md5)"
+else
+    print_warning "No se encontró pg_hba.conf, usando configuración por defecto"
+fi
+
 # Configurar base de datos
 print_status "Configurando base de datos..."
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;" > /dev/null 2>&1 || true
@@ -105,6 +124,7 @@ sudo -u postgres psql -c "DROP USER IF EXISTS $DB_USER;" > /dev/null 2>&1 || tru
 sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" > /dev/null 2>&1
 sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" > /dev/null 2>&1
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" > /dev/null 2>&1
+sudo -u postgres psql -c "ALTER USER $DB_USER CREATEDB;" > /dev/null 2>&1
 print_success "Base de datos '$DB_NAME' creada"
 
 # ==============================================================================
@@ -122,6 +142,14 @@ if ! id "$APP_USER" &>/dev/null; then
     useradd --system --create-home --shell /bin/bash $APP_USER
 fi
 print_success "Usuario '$APP_USER' creado"
+
+# ==============================================================================
+# CONFIGURAR GIT SAFE DIRECTORY
+# ==============================================================================
+print_status "Configurando permisos de Git..."
+git config --global --add safe.directory "$APP_DIR"
+sudo -u $APP_USER git config --global --add safe.directory "$APP_DIR"
+print_success "Git safe.directory configurado"
 
 # ==============================================================================
 # CLONAR REPOSITORIO
@@ -152,7 +180,7 @@ cat > "$APP_DIR/.env" <<EOF
 NODE_ENV=production
 PORT=$APP_PORT
 DATABASE_URL=$DATABASE_URL
-SESSION_SECRET=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 32)
+SESSION_SECRET=$SESSION_SECRET
 EOF
 
 chown $APP_USER:$APP_USER "$APP_DIR/.env"
@@ -164,13 +192,26 @@ print_success "Variables de entorno configuradas"
 # ==============================================================================
 print_status "Ejecutando migraciones de base de datos..."
 cd "$APP_DIR"
-sudo -u $APP_USER DATABASE_URL="$DATABASE_URL" npm run db:push > /dev/null 2>&1
+
+# Configurar variable de entorno para la migración
+export DATABASE_URL="$DATABASE_URL"
+
+# Ejecutar migraciones con drizzle-kit
+sudo -u $APP_USER -E npm run db:push > /dev/null 2>&1 || {
+    print_warning "Reintentando migraciones..."
+    sleep 2
+    sudo -u $APP_USER DATABASE_URL="$DATABASE_URL" npx drizzle-kit push > /dev/null 2>&1
+}
 print_success "Base de datos migrada"
 
 # ==============================================================================
 # CONFIGURAR PM2
 # ==============================================================================
 print_status "Configurando PM2..."
+
+# Crear directorio de logs
+mkdir -p "$APP_DIR/logs"
+chown -R $APP_USER:$APP_USER "$APP_DIR/logs"
 
 cat > "$APP_DIR/ecosystem.config.cjs" <<EOF
 module.exports = {
@@ -186,7 +227,8 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       PORT: $APP_PORT,
-      DATABASE_URL: '$DATABASE_URL'
+      DATABASE_URL: '$DATABASE_URL',
+      SESSION_SECRET: '$SESSION_SECRET'
     },
     error_file: '$APP_DIR/logs/error.log',
     out_file: '$APP_DIR/logs/output.log',
@@ -195,22 +237,36 @@ module.exports = {
 };
 EOF
 
-mkdir -p "$APP_DIR/logs"
-chown -R $APP_USER:$APP_USER "$APP_DIR"
+chown $APP_USER:$APP_USER "$APP_DIR/ecosystem.config.cjs"
+
+# Detener cualquier instancia previa
+sudo -u $APP_USER pm2 delete $APP_NAME > /dev/null 2>&1 || true
+sudo -u $APP_USER pm2 kill > /dev/null 2>&1 || true
 
 # Iniciar aplicación
+print_status "Iniciando aplicación con PM2..."
 cd "$APP_DIR"
-sudo -u $APP_USER pm2 delete $APP_NAME > /dev/null 2>&1 || true
 sudo -u $APP_USER pm2 start ecosystem.config.cjs > /dev/null 2>&1
 
-# Configurar inicio automático
-env PATH=$PATH:/usr/bin pm2 startup systemd -u $APP_USER --hp /home/$APP_USER > /dev/null 2>&1
-sudo -u $APP_USER pm2 save > /dev/null 2>&1
+# Esperar a que la aplicación inicie
+sleep 5
 
-print_success "Aplicación iniciada con PM2"
+# Verificar que la aplicación está corriendo
+if sudo -u $APP_USER pm2 list | grep -q "$APP_NAME"; then
+    print_success "Aplicación iniciada con PM2"
+else
+    print_warning "Verificando estado de la aplicación..."
+    sudo -u $APP_USER pm2 list
+fi
+
+# Configurar inicio automático de PM2
+print_status "Configurando inicio automático..."
+env PATH=$PATH:/usr/bin pm2 startup systemd -u $APP_USER --hp /home/$APP_USER > /dev/null 2>&1 || true
+sudo -u $APP_USER pm2 save > /dev/null 2>&1 || true
+print_success "PM2 configurado para inicio automático"
 
 # ==============================================================================
-# INSTALAR Y CONFIGURAR NGINX (opcional)
+# INSTALAR Y CONFIGURAR NGINX
 # ==============================================================================
 print_status "Instalando Nginx..."
 apt-get install -y -qq nginx
@@ -247,20 +303,56 @@ systemctl enable nginx
 print_success "Nginx configurado"
 
 # ==============================================================================
-# CONFIGURAR FIREWALL
+# CONFIGURAR FIREWALL (OPCIONAL)
 # ==============================================================================
 print_status "Configurando firewall..."
 if command -v ufw &> /dev/null; then
-    ufw --force enable > /dev/null 2>&1
+    ufw --force enable > /dev/null 2>&1 || true
     ufw allow ssh > /dev/null 2>&1
     ufw allow 'Nginx Full' > /dev/null 2>&1
-    print_success "Firewall configurado (SSH y HTTP/HTTPS permitidos)"
+    ufw allow $APP_PORT > /dev/null 2>&1
+    print_success "Firewall configurado (SSH, HTTP/HTTPS y puerto $APP_PORT)"
+else
+    print_warning "UFW no instalado, saltando configuración de firewall"
 fi
 
 # ==============================================================================
 # OBTENER IP DEL SERVIDOR
 # ==============================================================================
 SERVER_IP=$(hostname -I | awk '{print $1}')
+
+# ==============================================================================
+# GUARDAR CREDENCIALES
+# ==============================================================================
+cat > "/root/audivia-credentials.txt" <<EOF
+============================================
+AUDIVIA - Credenciales de Instalación
+============================================
+Fecha: $(date)
+Servidor: $SERVER_IP
+URL: http://$SERVER_IP
+
+Base de datos:
+  Nombre: $DB_NAME
+  Usuario: $DB_USER
+  Contraseña: $DB_PASS
+  URL: $DATABASE_URL
+
+Session Secret: $SESSION_SECRET
+
+Directorio: $APP_DIR
+Puerto: $APP_PORT
+Usuario sistema: $APP_USER
+
+Comandos útiles:
+  Ver estado:    sudo -u $APP_USER pm2 status
+  Ver logs:      sudo -u $APP_USER pm2 logs $APP_NAME
+  Reiniciar:     sudo -u $APP_USER pm2 restart $APP_NAME
+  Detener:       sudo -u $APP_USER pm2 stop $APP_NAME
+  Actualizar:    cd $APP_DIR && git pull && sudo -u $APP_USER pm2 restart $APP_NAME
+============================================
+EOF
+chmod 600 /root/audivia-credentials.txt
 
 # ==============================================================================
 # RESUMEN FINAL
@@ -292,31 +384,10 @@ echo "  - Ver estado: sudo -u $APP_USER pm2 status"
 echo "  - Ver logs: sudo -u $APP_USER pm2 logs $APP_NAME"
 echo "  - Reiniciar: sudo -u $APP_USER pm2 restart $APP_NAME"
 echo "  - Detener: sudo -u $APP_USER pm2 stop $APP_NAME"
+echo "  - Actualizar: cd $APP_DIR && git pull && sudo -u $APP_USER pm2 restart $APP_NAME"
 echo ""
 echo "=============================================="
 echo ""
-
-# Guardar credenciales en archivo seguro
-cat > "/root/audivia-credentials.txt" <<EOF
-============================================
-AUDIVIA - Credenciales de Instalación
-============================================
-Fecha: $(date)
-Servidor: $SERVER_IP
-URL: http://$SERVER_IP
-
-Base de datos:
-  Nombre: $DB_NAME
-  Usuario: $DB_USER
-  Contraseña: $DB_PASS
-  URL: $DATABASE_URL
-
-Directorio: $APP_DIR
-Puerto: $APP_PORT
-Usuario sistema: $APP_USER
-============================================
-EOF
-chmod 600 /root/audivia-credentials.txt
 
 print_success "Credenciales guardadas en /root/audivia-credentials.txt"
 echo ""

@@ -44,9 +44,11 @@ Audivia es una plataforma completa de audiolibros con monetización dual, diseñ
 
 ## Requisitos del Sistema
 
-- Node.js: v18 o superior
-- Base de Datos: PostgreSQL (compatible con Neon Database)
-- Almacenamiento: Compatible con servicios de almacenamiento de objetos
+- **Node.js:** v18 o superior (recomendado v20)
+- **Base de Datos:** PostgreSQL 14+ (local o Neon Database en la nube)
+- **Sistema Operativo:** Ubuntu 18.04, 20.04, 22.04 o 24.04 (para instalación automática)
+- **RAM:** Mínimo 1GB, recomendado 2GB+
+- **Almacenamiento:** 10GB+ disponible
 
 ---
 
@@ -66,17 +68,36 @@ O si prefieres usar wget:
 wget -qO- https://raw.githubusercontent.com/innovafpiesmmg/audivia/main/install.sh | sudo bash
 ```
 
-Este script automáticamente:
+### El script automáticamente:
 - Instala Node.js 20, PostgreSQL y todas las dependencias
-- Crea la base de datos y usuario
-- Descarga e instala Audivia
+- Configura autenticación PostgreSQL (md5)
+- Crea la base de datos y usuario con permisos apropiados
+- Descarga e instala Audivia desde GitHub
+- Genera SESSION_SECRET automáticamente
+- Ejecuta las migraciones de base de datos
 - Configura PM2 para inicio automático
 - Instala y configura Nginx como proxy reverso
 - Configura el firewall (UFW)
 
-Al finalizar, accede a `http://tu-ip-servidor` y verás el asistente de configuración para crear tu cuenta de administrador.
+### Después de la instalación:
+1. Accede a `http://tu-ip-servidor`
+2. Verás el asistente de configuración para crear tu cuenta de administrador
+3. Las credenciales se guardan en `/root/audivia-credentials.txt`
 
-Las credenciales de la base de datos se guardan en `/root/audivia-credentials.txt`.
+### Comandos útiles post-instalación:
+```bash
+# Ver estado de la aplicación
+sudo -u audivia pm2 status
+
+# Ver logs en tiempo real
+sudo -u audivia pm2 logs audivia
+
+# Reiniciar la aplicación
+sudo -u audivia pm2 restart audivia
+
+# Actualizar desde GitHub
+cd /var/www/audivia && git pull && sudo -u audivia pm2 restart audivia
+```
 
 ---
 
@@ -86,6 +107,9 @@ Las credenciales de la base de datos se guardan en `/root/audivia-credentials.tx
 ```bash
 git clone https://github.com/innovafpiesmmg/audivia.git
 cd audivia
+
+# Importante: configurar safe.directory si ejecutas como root
+git config --global --add safe.directory /var/www/audivia
 ```
 
 ### 2. Instalar Dependencias
@@ -93,12 +117,27 @@ cd audivia
 npm install
 ```
 
-### 3. Configurar Variables de Entorno
+### 3. Configurar Base de Datos PostgreSQL
+```bash
+# Crear usuario y base de datos
+sudo -u postgres psql -c "CREATE USER audivia WITH PASSWORD 'tu_contraseña';"
+sudo -u postgres psql -c "CREATE DATABASE audivia OWNER audivia;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE audivia TO audivia;"
+```
+
+### 4. Configurar Variables de Entorno
 Crea un archivo `.env` con las siguientes variables:
 
 ```env
+# Servidor
+NODE_ENV=production
+PORT=5000
+
 # Base de Datos (obligatorio)
-DATABASE_URL=postgresql://usuario:contraseña@host:puerto/basedatos
+DATABASE_URL=postgresql://audivia:tu_contraseña@localhost:5432/audivia
+
+# Sesiones (se genera automáticamente si no se proporciona)
+SESSION_SECRET=tu_secreto_aleatorio_de_32_caracteres
 
 # PayPal (para pagos)
 PAYPAL_CLIENT_ID=tu_client_id
@@ -113,20 +152,52 @@ SMTP_PASS=tu_contraseña
 SMTP_FROM=noreply@tudominio.com
 ```
 
-### 4. Ejecutar Migraciones
+### 5. Ejecutar Migraciones
 ```bash
 npm run db:push
 ```
 
-### 5. Iniciar la Aplicación
+### 6. Iniciar la Aplicación
+
+**Desarrollo:**
 ```bash
 npm run dev
 ```
 
-### 6. Configuración Inicial
+**Producción con PM2:**
+```bash
+pm2 start npm --name audivia -- run dev
+pm2 save
+```
+
+### 7. Configuración Inicial
 Al acceder por primera vez a la aplicación, se mostrará un asistente de configuración que te guiará para:
 - Verificar la conexión a la base de datos
 - Crear la cuenta de administrador
+
+---
+
+## Base de Datos
+
+### Soporte Dual: Local y Neon (Cloud)
+
+Audivia detecta automáticamente el tipo de base de datos:
+
+- **PostgreSQL Local:** Usa el driver `pg` estándar para conexiones locales
+- **Neon Database (Cloud):** Usa el driver `@neondatabase/serverless` con WebSockets
+
+La detección es automática basándose en el `DATABASE_URL`:
+- URLs con `neon.tech` usan el driver de Neon
+- Otras URLs usan el driver pg estándar
+
+### Migraciones
+```bash
+# Aplicar cambios al esquema
+npm run db:push
+
+# Ver estado de la base de datos (GUI)
+npm run db:studio
+```
 
 ---
 
@@ -140,15 +211,18 @@ audivia/
 │   │   ├── pages/          # Páginas de la aplicación
 │   │   ├── hooks/          # Custom hooks
 │   │   └── lib/            # Utilidades
+│   └── public/             # Archivos estáticos (logo, etc.)
 ├── server/                 # Backend Express
 │   ├── routes.ts           # Endpoints API
 │   ├── storage.ts          # Capa de almacenamiento
+│   ├── db.ts               # Configuración de base de datos
 │   ├── paypal-service.ts   # Integración PayPal
 │   ├── email.ts            # Servicio de email
+│   ├── github-service.ts   # Sincronización con GitHub
 │   └── invoice-service.ts  # Generación de facturas
 ├── shared/                 # Código compartido
-│   └── schema.ts           # Esquemas de base de datos
-└── migrations/             # Migraciones de BD
+│   └── schema.ts           # Esquemas de base de datos (Drizzle)
+└── install.sh              # Script de instalación automática
 ```
 
 ---
@@ -182,6 +256,9 @@ audivia/
 - `POST /api/subscriptions/subscribe` - Suscribirse
 - `GET /api/subscriptions/active` - Suscripción activa
 
+### RSS Feeds
+- `GET /api/rss/user/:userId` - Feed RSS personal para AntennaPod
+
 ---
 
 ## Tecnologías Utilizadas
@@ -196,13 +273,15 @@ audivia/
 ### Backend
 - Express.js con TypeScript
 - Drizzle ORM para base de datos
-- PostgreSQL (Neon Database)
+- PostgreSQL (local o Neon Database)
 - Passport.js para autenticación
+- PM2 para gestión de procesos
 
 ### Integraciones
 - PayPal SDK para pagos
 - Nodemailer para emails
 - PDFKit para facturas
+- Octokit para sincronización con GitHub
 
 ---
 
@@ -220,17 +299,70 @@ Accede a la versión móvil en: `/mobile`
 
 ## Variables de Entorno
 
-| Variable | Descripción | Ejemplo |
-|----------|-------------|---------|
-| `DATABASE_URL` | URL de conexión a PostgreSQL | `postgresql://user:pass@localhost:5432/dbname` |
-| `SESSION_SECRET` | Secreto para sesiones (aleatorio) | `your-random-secret-key` |
-| `PAYPAL_CLIENT_ID` | Client ID de PayPal | `AXxx...` |
-| `PAYPAL_CLIENT_SECRET` | Secret de PayPal | `EBxx...` |
-| `PAYPAL_MODE` | Modo de PayPal | `sandbox` o `live` |
-| `SMTP_HOST` | Servidor SMTP | `smtp.gmail.com` |
-| `SMTP_PORT` | Puerto SMTP | `587` |
-| `SMTP_USER` | Usuario SMTP | `tu@email.com` |
-| `SMTP_PASS` | Contraseña SMTP | `tu-contraseña` |
+| Variable | Descripción | Requerido | Ejemplo |
+|----------|-------------|-----------|---------|
+| `DATABASE_URL` | URL de conexión a PostgreSQL | Sí | `postgresql://user:pass@localhost:5432/audivia` |
+| `SESSION_SECRET` | Secreto para sesiones (auto-generado si no existe) | No | `tu-secreto-aleatorio-32-chars` |
+| `PORT` | Puerto de la aplicación | No | `5000` (default) |
+| `NODE_ENV` | Entorno de ejecución | No | `production` |
+| `PAYPAL_CLIENT_ID` | Client ID de PayPal | Para pagos | `AXxx...` |
+| `PAYPAL_CLIENT_SECRET` | Secret de PayPal | Para pagos | `EBxx...` |
+| `PAYPAL_MODE` | Modo de PayPal | Para pagos | `sandbox` o `live` |
+| `SMTP_HOST` | Servidor SMTP | Para emails | `smtp.gmail.com` |
+| `SMTP_PORT` | Puerto SMTP | Para emails | `587` |
+| `SMTP_USER` | Usuario SMTP | Para emails | `tu@email.com` |
+| `SMTP_PASS` | Contraseña SMTP | Para emails | `tu-contraseña` |
+| `SMTP_FROM` | Email remitente | Para emails | `noreply@tudominio.com` |
+
+---
+
+## Sincronización con GitHub
+
+Audivia incluye sincronización bidireccional con GitHub:
+
+1. **Desde Admin > GitHub:** Conecta tu cuenta de GitHub
+2. **Sincronizar:** Sube todos los archivos (código e imágenes) al repositorio
+3. **En el servidor:** Ejecuta `git pull` para obtener las actualizaciones
+
+### Actualizar servidor desde GitHub:
+```bash
+cd /var/www/audivia
+git config --global --add safe.directory /var/www/audivia
+git pull origin main
+sudo -u audivia pm2 restart audivia
+```
+
+---
+
+## Solución de Problemas
+
+### Error de permisos de Git
+```bash
+git config --global --add safe.directory /var/www/audivia
+```
+
+### Error de conexión a PostgreSQL
+Verificar que el archivo `pg_hba.conf` usa autenticación `md5`:
+```bash
+sudo nano /etc/postgresql/*/main/pg_hba.conf
+# Cambiar 'peer' por 'md5' en conexiones locales
+sudo systemctl restart postgresql
+```
+
+### Aplicación no inicia
+```bash
+# Ver logs
+sudo -u audivia pm2 logs audivia
+
+# Reiniciar
+sudo -u audivia pm2 restart audivia
+```
+
+### Logo no se muestra
+Verificar que el archivo existe y tiene permisos correctos:
+```bash
+ls -la /var/www/audivia/client/public/logo.png
+```
 
 ---
 
@@ -242,9 +374,6 @@ npm install
 
 # Desarrollo con hot-reload
 npm run dev
-
-# Construir para producción
-npm run build
 
 # Ejecutar migraciones de BD
 npm run db:push

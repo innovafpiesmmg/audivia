@@ -100,7 +100,7 @@ export default function Profile() {
 
   const updatePasswordMutation = useMutation({
     mutationFn: async (data: PasswordFormData) => {
-      return await apiRequest("POST", "/api/change-password", {
+      return await apiRequest("PATCH", "/api/profile/password", {
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
       });
