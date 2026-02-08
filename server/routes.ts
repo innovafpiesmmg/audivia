@@ -1993,6 +1993,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const tempFiles: string[] = [];
     let extractDir: string | null = null;
     
+    // Extend request timeout for large files (30 minutes)
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    
     try {
       const userId = req.session.userId!;
       const zipFile = req.file;
@@ -2003,7 +2007,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       tempFiles.push(zipFile.path);
       
-      // Create extraction directory
       const unzipper = await import('unzipper');
       const path = await import('path');
       const fsPromises = await import('fs/promises');
@@ -2012,28 +2015,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
       extractDir = path.join(os.tmpdir(), `import-${Date.now()}`);
       await fsPromises.mkdir(extractDir, { recursive: true });
       
-      // Extract ZIP file
+      // Extract ZIP file with zip-slip protection
+      const realExtractDir = await fsPromises.realpath(extractDir);
       await new Promise<void>((resolve, reject) => {
-        fs.createReadStream(zipFile.path)
-          .pipe(unzipper.Extract({ path: extractDir! }))
-          .on('close', resolve)
-          .on('error', reject);
+        const extractStream = fs.createReadStream(zipFile.path)
+          .pipe(unzipper.Parse());
+        
+        const writePromises: Promise<void>[] = [];
+        
+        extractStream.on('entry', (entry: any) => {
+          // Reject symlinks entirely
+          if (entry.type === 'SymbolicLink' || entry.type === 'Link') {
+            console.warn(`Symlink entry rejected, skipping: ${entry.path}`);
+            entry.autodrain();
+            return;
+          }
+          
+          // Reject absolute paths and paths with ..
+          if (path.isAbsolute(entry.path) || entry.path.includes('..')) {
+            console.warn(`Unsafe path rejected, skipping: ${entry.path}`);
+            entry.autodrain();
+            return;
+          }
+          
+          const resolvedPath = path.resolve(path.join(realExtractDir, entry.path));
+          
+          // Zip-slip protection: reject entries that escape extractDir
+          if (!resolvedPath.startsWith(realExtractDir + path.sep) && resolvedPath !== realExtractDir) {
+            console.warn(`Zip slip detected, skipping: ${entry.path}`);
+            entry.autodrain();
+            return;
+          }
+          
+          if (entry.type === 'Directory') {
+            writePromises.push(fsPromises.mkdir(resolvedPath, { recursive: true }).then(() => {}));
+            entry.autodrain();
+          } else {
+            const dir = path.dirname(resolvedPath);
+            writePromises.push(
+              fsPromises.mkdir(dir, { recursive: true }).then(() => {
+                return new Promise<void>((res, rej) => {
+                  entry.pipe(fs.createWriteStream(resolvedPath))
+                    .on('finish', res)
+                    .on('error', rej);
+                });
+              })
+            );
+          }
+        });
+        
+        extractStream.on('close', () => Promise.all(writePromises).then(() => resolve()).catch(reject));
+        extractStream.on('error', reject);
       });
       
+      // Recursively find all files in extracted directory (handles nested folders)
+      const findAllFiles = async (dir: string): Promise<string[]> => {
+        const entries = await fsPromises.readdir(dir, { withFileTypes: true });
+        const files: string[] = [];
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.name.startsWith('.') || entry.name === '__MACOSX') continue;
+          if (entry.isDirectory()) {
+            files.push(...await findAllFiles(fullPath));
+          } else {
+            // Additional safety: verify file is within extractDir
+            const realFile = await fsPromises.realpath(fullPath);
+            if (realFile.startsWith(realExtractDir)) {
+              files.push(realFile);
+            }
+          }
+        }
+        return files;
+      };
+      
+      const allFiles = await findAllFiles(extractDir);
+      
       // Look for metadata.json
-      const metadataPath = path.join(extractDir, 'metadata.json');
+      const metadataFile = allFiles.find(f => path.basename(f).toLowerCase() === 'metadata.json');
       let metadata: any = null;
       let autoDetectedFromMP3 = false;
       
-      try {
-        const metadataContent = await fsPromises.readFile(metadataPath, 'utf-8');
-        metadata = JSON.parse(metadataContent);
-      } catch (err) {
-        // No metadata.json found, try to auto-detect from MP3 files
+      if (metadataFile) {
+        try {
+          const metadataContent = await fsPromises.readFile(metadataFile, 'utf-8');
+          metadata = JSON.parse(metadataContent);
+          // Strip any _fullPath from user-supplied metadata (security: prevent path traversal)
+          if (metadata?.chapters && Array.isArray(metadata.chapters)) {
+            metadata.chapters.forEach((ch: any) => { delete ch._fullPath; });
+          }
+        } catch (err) {
+          console.warn("Failed to parse metadata.json:", err);
+        }
+      }
+      
+      if (!metadata) {
         console.log("No metadata.json found, attempting to read metadata from MP3 files...");
         
-        const files = await fsPromises.readdir(extractDir);
-        const mp3Files = files.filter(f => f.toLowerCase().endsWith('.mp3')).sort();
+        const mp3Files = allFiles
+          .filter(f => f.toLowerCase().endsWith('.mp3'))
+          .sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
         
         if (mp3Files.length === 0) {
           return res.status(400).json({ 
@@ -2042,52 +2122,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
         
-        // Read metadata from the first MP3 file to get album/artist info
         const mm = await import('music-metadata');
-        const firstMp3Path = path.join(extractDir, mp3Files[0]);
-        const firstMp3Metadata = await mm.parseFile(firstMp3Path);
+        const firstMp3Metadata = await mm.parseFile(mp3Files[0]);
         
         const albumTitle = firstMp3Metadata.common.album || "Audiolibro sin titulo";
         const author = firstMp3Metadata.common.artist || "Autor desconocido";
         const narrator = firstMp3Metadata.common.composer || null;
         const genre = firstMp3Metadata.common.genre?.[0] || "Audiobook";
         
-        // Build chapters array from all MP3 files
         const chaptersFromMP3: any[] = [];
         
-        for (const mp3File of mp3Files) {
-          const mp3Path = path.join(extractDir, mp3File);
+        for (const mp3FullPath of mp3Files) {
+          const mp3FileName = path.basename(mp3FullPath);
           try {
-            const mp3Meta = await mm.parseFile(mp3Path);
+            const mp3Meta = await mm.parseFile(mp3FullPath);
             const trackNo = mp3Meta.common.track?.no || chaptersFromMP3.length + 1;
             
             chaptersFromMP3.push({
-              title: mp3Meta.common.title || mp3File.replace('.mp3', '').replace('.MP3', ''),
+              title: mp3Meta.common.title || mp3FileName.replace(/\.(mp3|MP3)$/, ''),
               chapterNumber: trackNo,
               description: null,
-              audioFile: mp3File,
+              audioFile: mp3FileName,
+              _fullPath: mp3FullPath,
               duration: Math.round(mp3Meta.format.duration || 0),
               isSample: false,
             });
           } catch (mp3Err) {
-            console.warn(`Could not read metadata from ${mp3File}:`, mp3Err);
+            console.warn(`Could not read metadata from ${mp3FileName}:`, mp3Err);
             chaptersFromMP3.push({
-              title: mp3File.replace('.mp3', '').replace('.MP3', ''),
+              title: mp3FileName.replace(/\.(mp3|MP3)$/, ''),
               chapterNumber: chaptersFromMP3.length + 1,
-              audioFile: mp3File,
+              audioFile: mp3FileName,
+              _fullPath: mp3FullPath,
               duration: 0,
               isSample: false,
             });
           }
         }
         
-        // Sort chapters by track number
         chaptersFromMP3.sort((a, b) => a.chapterNumber - b.chapterNumber);
-        
-        // Reassign chapter numbers after sorting
-        chaptersFromMP3.forEach((ch, idx) => {
-          ch.chapterNumber = idx + 1;
-        });
+        chaptersFromMP3.forEach((ch, idx) => { ch.chapterNumber = idx + 1; });
         
         metadata = {
           title: albumTitle,
@@ -2122,6 +2196,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           chapterNumber: z.number().int().min(1).optional(),
           description: z.string().optional().nullable(),
           audioFile: z.string().optional(),
+          _fullPath: z.string().optional(),
           duration: z.number().int().min(0).default(0),
           isSample: z.boolean().default(false),
         })).default([]),
@@ -2140,51 +2215,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw validationError;
       }
       
-      // Helper function to safely resolve paths (prevent path traversal)
-      const safePath = (basePath: string, filename: string): string | null => {
-        // Remove any path components and only use the filename
-        const safeName = path.basename(filename);
-        if (safeName !== filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
-          console.warn(`Rejected unsafe path: ${filename}`);
-          return null;
-        }
-        return path.join(basePath, safeName);
-      };
-      
       // Get storage service for uploads (local storage organized by audiobook title)
       const storageService = StorageService.createLocal(validatedMetadata.title);
       
-      // Upload cover art if exists
+      // Upload cover art if exists (covers are small, buffer is fine)
       let coverArtUrl: string | null = null;
-      const coverFiles = ['cover.jpg', 'cover.png', 'cover.jpeg', 'portada.jpg', 'portada.png'];
+      const coverFileNames = ['cover.jpg', 'cover.png', 'cover.jpeg', 'portada.jpg', 'portada.png'];
       
-      for (const coverName of coverFiles) {
-        const coverPath = safePath(extractDir, coverName);
-        if (!coverPath) continue;
+      const coverFile = allFiles.find(f => coverFileNames.includes(path.basename(f).toLowerCase()));
+      if (coverFile) {
         try {
-          await fsPromises.access(coverPath);
-          // Cover exists, upload it
-          const coverBuffer = await fsPromises.readFile(coverPath);
-          const mimeType = coverName.endsWith('.png') ? 'image/png' : 'image/jpeg';
-          
-          const multerFile: Express.Multer.File = {
-            buffer: coverBuffer,
-            originalname: coverName,
-            mimetype: mimeType,
-            size: coverBuffer.length,
-            fieldname: 'cover',
-            encoding: '7bit',
-            destination: '',
-            filename: '',
-            path: '',
-            stream: null as any,
-          };
-          
-          const uploadResult = await storageService.saveCoverArt(multerFile, userId);
+          const coverName = path.basename(coverFile);
+          const mimeType = coverName.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+          const uploadResult = await storageService.saveCoverFromPath(coverFile, coverName, mimeType, userId);
           coverArtUrl = uploadResult.publicUrl;
-          break;
-        } catch {
-          // Cover file doesn't exist, try next
+        } catch (err) {
+          console.warn("Could not upload cover art:", err);
         }
       }
       
@@ -2203,7 +2249,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         publisherId: userId,
       });
       
-      // Process chapters from metadata
+      // Process chapters from metadata - use file copy instead of loading into memory
       const chapters = validatedMetadata.chapters;
       const createdChapters: any[] = [];
       let totalDuration = 0;
@@ -2215,78 +2261,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
         let audioUrl: string | null = null;
         let duration = chapterMeta.duration || 0;
         
-        // Try to find the audio file
         if (chapterMeta.audioFile) {
-          const audioPath = safePath(extractDir, chapterMeta.audioFile);
+          // Find the audio file - only use paths verified to be within extractDir (from allFiles)
+          let audioPath: string | null = null;
+          
+          // If _fullPath was set by auto-detection, verify it's in our allFiles list
+          if (chapterMeta._fullPath && allFiles.includes(chapterMeta._fullPath)) {
+            audioPath = chapterMeta._fullPath;
+          }
+          // Otherwise search by filename in validated allFiles
           if (!audioPath) {
-            console.warn(`Rejected unsafe audio path: ${chapterMeta.audioFile}`);
-          } else try {
-            await fsPromises.access(audioPath);
-            // Audio file exists, read it
-            let audioBuffer = await fsPromises.readFile(audioPath);
-            const ext = path.extname(chapterMeta.audioFile).toLowerCase();
-            const mimeType = ext === '.mp3' ? 'audio/mpeg' : ext === '.m4a' ? 'audio/mp4' : 'audio/mpeg';
-            
-            // Update ID3 metadata for MP3 files
-            if (ext === '.mp3') {
-              try {
-                // Read cover art buffer if available
-                let coverBuffer: Buffer | undefined;
-                for (const coverName of coverFiles) {
-                  const coverPath = safePath(extractDir!, coverName);
-                  if (!coverPath) continue;
-                  try {
-                    coverBuffer = await fsPromises.readFile(coverPath);
-                    break;
-                  } catch {
-                    // Cover not found, try next
-                  }
+            audioPath = allFiles.find(f => path.basename(f) === path.basename(chapterMeta.audioFile!)) || null;
+          }
+          
+          if (audioPath) {
+            try {
+              await fsPromises.access(audioPath);
+              const ext = path.extname(chapterMeta.audioFile!).toLowerCase();
+              const mimeType = ext === '.mp3' ? 'audio/mpeg' : ext === '.m4a' ? 'audio/mp4' : 'audio/mpeg';
+              
+              // Use file copy instead of loading entire file into memory
+              const uploadResult = await storageService.saveAudioFromPath(audioPath, chapterMeta.audioFile!, mimeType, userId);
+              audioUrl = uploadResult.publicUrl;
+              
+              // Get duration from file metadata (only reads headers, not entire file)
+              if (duration === 0) {
+                try {
+                  const mm = await import('music-metadata');
+                  const audioMetadata = await mm.parseFile(audioPath);
+                  duration = Math.round(audioMetadata.format.duration || 0);
+                } catch {
+                  // Couldn't get duration
                 }
-                
-                audioBuffer = await updateMP3MetadataBuffer(audioBuffer, {
-                  title: chapterMeta.title || `Capitulo ${chapterNumber}`,
-                  author: validatedMetadata.author,
-                  album: validatedMetadata.title,
-                  trackNumber: chapterNumber,
-                  totalTracks: chapters.length,
-                  year: new Date().getFullYear(),
-                  genre: 'Audiobook',
-                  narrator: validatedMetadata.narrator || undefined,
-                }, coverBuffer);
-                console.log(`Updated ID3 metadata for chapter ${chapterNumber}: ${chapterMeta.title || 'Untitled'}`);
-              } catch (id3Error) {
-                console.warn(`Could not update ID3 metadata for ${chapterMeta.audioFile}:`, id3Error);
               }
+              
+              console.log(`Imported chapter ${chapterNumber}: ${chapterMeta.title || chapterMeta.audioFile} (${duration}s)`);
+            } catch (err) {
+              console.warn(`Audio file not found: ${chapterMeta.audioFile}`, err);
             }
-            
-            const multerFile: Express.Multer.File = {
-              buffer: audioBuffer,
-              originalname: chapterMeta.audioFile,
-              mimetype: mimeType,
-              size: audioBuffer.length,
-              fieldname: 'audio',
-              encoding: '7bit',
-              destination: '',
-              filename: '',
-              path: '',
-              stream: null as any,
-            };
-            
-            const uploadResult = await storageService.saveEpisodeAudio(multerFile, userId);
-            audioUrl = uploadResult.publicUrl;
-            
-            // Try to get duration from file
-            if (duration === 0) {
-              try {
-                const mm = await import('music-metadata');
-                const audioMetadata = await mm.parseBuffer(audioBuffer);
-                duration = Math.round(audioMetadata.format.duration || 0);
-              } catch {
-                // Couldn't get duration
-              }
-            }
-          } catch {
-            console.warn(`Audio file not found: ${chapterMeta.audioFile}`);
+          } else {
+            console.warn(`Audio file not found in ZIP: ${chapterMeta.audioFile}`);
           }
         }
         

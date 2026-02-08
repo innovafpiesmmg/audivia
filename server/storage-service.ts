@@ -101,13 +101,10 @@ export class LocalStorageAdapter implements StorageAdapter {
     const storagePath = `${basePath}/audio/${filename}`;
     const fullPath = path.join(this.uploadsDir, storagePath);
 
-    // Ensure directory exists
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
 
-    // Move file to destination
     await fs.writeFile(fullPath, file.buffer);
 
-    // Calculate checksum
     const checksum = crypto.createHash("md5").update(file.buffer).digest("hex");
 
     return {
@@ -121,6 +118,62 @@ export class LocalStorageAdapter implements StorageAdapter {
       mimeType: file.mimetype,
       sizeBytes: file.size,
       checksum,
+      visibility: "public",
+      status: "APPROVED",
+    };
+  }
+
+  async saveAudioFromPath(sourcePath: string, originalName: string, mimeType: string, ownerId: string, episodeId?: string, podcastId?: string): Promise<UploadMetadata> {
+    const basePath = this.getBasePath();
+    const filename = this.generateFilename(originalName);
+    const storagePath = `${basePath}/audio/${filename}`;
+    const fullPath = path.join(this.uploadsDir, storagePath);
+
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+
+    await fs.copyFile(sourcePath, fullPath);
+
+    const stat = await fs.stat(fullPath);
+
+    return {
+      ownerId,
+      podcastId: podcastId || null,
+      episodeId: episodeId || null,
+      type: "EPISODE_AUDIO",
+      storageProvider: "LOCAL",
+      storageKey: storagePath,
+      publicUrl: `/media/${storagePath}`,
+      mimeType,
+      sizeBytes: stat.size,
+      checksum: null,
+      visibility: "public",
+      status: "APPROVED",
+    };
+  }
+
+  async saveCoverFromPath(sourcePath: string, originalName: string, mimeType: string, ownerId: string, podcastId?: string): Promise<UploadMetadata> {
+    const basePath = this.getBasePath();
+    const filename = this.generateFilename(originalName);
+    const storagePath = `${basePath}/covers/${filename}`;
+    const fullPath = path.join(this.uploadsDir, storagePath);
+
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+
+    await fs.copyFile(sourcePath, fullPath);
+
+    const stat = await fs.stat(fullPath);
+
+    return {
+      ownerId,
+      podcastId: podcastId || null,
+      episodeId: null,
+      type: "COVER_ART",
+      storageProvider: "LOCAL",
+      storageKey: storagePath,
+      publicUrl: `/media/${storagePath}`,
+      mimeType,
+      sizeBytes: stat.size,
+      checksum: null,
       visibility: "public",
       status: "APPROVED",
     };
@@ -370,6 +423,30 @@ export class StorageService {
 
   async saveEpisodeAudio(file: Express.Multer.File, ownerId: string, episodeId?: string, podcastId?: string): Promise<UploadMetadata> {
     return this.adapter.saveEpisodeAudio(file, ownerId, episodeId, podcastId);
+  }
+
+  async saveAudioFromPath(sourcePath: string, originalName: string, mimeType: string, ownerId: string, episodeId?: string, podcastId?: string): Promise<UploadMetadata> {
+    if (this.adapter instanceof LocalStorageAdapter) {
+      return this.adapter.saveAudioFromPath(sourcePath, originalName, mimeType, ownerId, episodeId, podcastId);
+    }
+    const fileBuffer = await fs.readFile(sourcePath);
+    const multerFile: Express.Multer.File = {
+      buffer: fileBuffer, originalname: originalName, mimetype: mimeType, size: fileBuffer.length,
+      fieldname: 'audio', encoding: '7bit', destination: '', filename: '', path: '', stream: null as any,
+    };
+    return this.adapter.saveEpisodeAudio(multerFile, ownerId, episodeId, podcastId);
+  }
+
+  async saveCoverFromPath(sourcePath: string, originalName: string, mimeType: string, ownerId: string, podcastId?: string): Promise<UploadMetadata> {
+    if (this.adapter instanceof LocalStorageAdapter) {
+      return this.adapter.saveCoverFromPath(sourcePath, originalName, mimeType, ownerId, podcastId);
+    }
+    const fileBuffer = await fs.readFile(sourcePath);
+    const multerFile: Express.Multer.File = {
+      buffer: fileBuffer, originalname: originalName, mimetype: mimeType, size: fileBuffer.length,
+      fieldname: 'cover', encoding: '7bit', destination: '', filename: '', path: '', stream: null as any,
+    };
+    return this.adapter.saveCoverArt(multerFile, ownerId, podcastId);
   }
 
   getPublicUrl(asset: MediaAsset): string {

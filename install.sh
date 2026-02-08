@@ -240,7 +240,7 @@ cat > "/etc/nginx/sites-available/$APP_NAME" << EOF
 server {
     listen 80;
     server_name _;
-    client_max_body_size 500M;
+    client_max_body_size 2G;
 
     location / {
         proxy_pass http://127.0.0.1:$APP_PORT;
@@ -252,6 +252,11 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_cache_bypass \$http_upgrade;
+
+        proxy_connect_timeout 600;
+        proxy_send_timeout 600;
+        proxy_read_timeout 600;
+        send_timeout 600;
     }
 }
 EOF
