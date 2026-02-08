@@ -2007,66 +2007,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       tempFiles.push(zipFile.path);
       
-      const unzipper = await import('unzipper');
       const path = await import('path');
       const fsPromises = await import('fs/promises');
       const fs = await import('fs');
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
       
       extractDir = path.join(os.tmpdir(), `import-${Date.now()}`);
       await fsPromises.mkdir(extractDir, { recursive: true });
       
-      // Extract ZIP file with zip-slip protection
-      const realExtractDir = await fsPromises.realpath(extractDir);
-      await new Promise<void>((resolve, reject) => {
-        const extractStream = fs.createReadStream(zipFile.path)
-          .pipe(unzipper.Parse());
-        
-        const writePromises: Promise<void>[] = [];
-        
-        extractStream.on('entry', (entry: any) => {
-          // Reject symlinks entirely
-          if (entry.type === 'SymbolicLink' || entry.type === 'Link') {
-            console.warn(`Symlink entry rejected, skipping: ${entry.path}`);
-            entry.autodrain();
-            return;
-          }
-          
-          // Reject absolute paths and paths with ..
-          if (path.isAbsolute(entry.path) || entry.path.includes('..')) {
-            console.warn(`Unsafe path rejected, skipping: ${entry.path}`);
-            entry.autodrain();
-            return;
-          }
-          
-          const resolvedPath = path.resolve(path.join(realExtractDir, entry.path));
-          
-          // Zip-slip protection: reject entries that escape extractDir
-          if (!resolvedPath.startsWith(realExtractDir + path.sep) && resolvedPath !== realExtractDir) {
-            console.warn(`Zip slip detected, skipping: ${entry.path}`);
-            entry.autodrain();
-            return;
-          }
-          
-          if (entry.type === 'Directory') {
-            writePromises.push(fsPromises.mkdir(resolvedPath, { recursive: true }).then(() => {}));
-            entry.autodrain();
-          } else {
-            const dir = path.dirname(resolvedPath);
-            writePromises.push(
-              fsPromises.mkdir(dir, { recursive: true }).then(() => {
-                return new Promise<void>((res, rej) => {
-                  entry.pipe(fs.createWriteStream(resolvedPath))
-                    .on('finish', res)
-                    .on('error', rej);
-                });
-              })
-            );
-          }
+      // Extract ZIP using system unzip command (much more robust for large files)
+      console.log(`[ZIP Import] Extracting ${zipFile.originalname} (${(zipFile.size / 1024 / 1024).toFixed(1)} MB) to ${extractDir}`);
+      try {
+        await execFileAsync('unzip', ['-o', '-q', zipFile.path, '-d', extractDir], {
+          timeout: 600000,
+          maxBuffer: 10 * 1024 * 1024,
         });
-        
-        extractStream.on('close', () => Promise.all(writePromises).then(() => resolve()).catch(reject));
-        extractStream.on('error', reject);
-      });
+      } catch (unzipError: any) {
+        if (unzipError.code === 'ENOENT') {
+          console.log('[ZIP Import] System unzip not found, falling back to Node.js unzipper');
+          const unzipper = await import('unzipper');
+          await new Promise<void>((resolve, reject) => {
+            fs.createReadStream(zipFile.path)
+              .pipe(unzipper.Extract({ path: extractDir! }))
+              .on('close', resolve)
+              .on('error', reject);
+          });
+        } else {
+          throw new Error(`Error al extraer ZIP: ${unzipError.message || unzipError}`);
+        }
+      }
+      
+      // Security: validate extracted files - remove symlinks and files outside extractDir
+      const realExtractDir = await fsPromises.realpath(extractDir);
+      const validateExtractedFiles = async (dir: string) => {
+        const entries = await fsPromises.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isSymbolicLink()) {
+            console.warn(`Symlink removed: ${fullPath}`);
+            await fsPromises.unlink(fullPath);
+          } else if (entry.isDirectory()) {
+            const realPath = await fsPromises.realpath(fullPath);
+            if (!realPath.startsWith(realExtractDir)) {
+              console.warn(`Directory outside extractDir removed: ${fullPath}`);
+              await fsPromises.rm(fullPath, { recursive: true, force: true });
+            } else {
+              await validateExtractedFiles(fullPath);
+            }
+          } else {
+            const realPath = await fsPromises.realpath(fullPath);
+            if (!realPath.startsWith(realExtractDir)) {
+              console.warn(`File outside extractDir removed: ${fullPath}`);
+              await fsPromises.unlink(fullPath);
+            }
+          }
+        }
+      };
+      await validateExtractedFiles(extractDir);
+      console.log('[ZIP Import] Extraction complete, files validated');
       
       // Recursively find all files in extracted directory (handles nested folders)
       const findAllFiles = async (dir: string): Promise<string[]> => {

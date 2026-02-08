@@ -69,7 +69,7 @@ print_success "Sistema actualizado"
 # INSTALACIÓN DE DEPENDENCIAS
 # ==============================================================================
 print_status "Instalando dependencias..."
-apt-get install -y -qq curl wget git build-essential ca-certificates gnupg lsb-release nginx
+apt-get install -y -qq curl wget git build-essential ca-certificates gnupg lsb-release nginx unzip
 apt-mark manual nginx > /dev/null 2>&1 || true
 systemctl enable nginx
 print_success "Dependencias instaladas"
